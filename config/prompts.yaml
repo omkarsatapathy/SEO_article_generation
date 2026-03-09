@@ -272,6 +272,7 @@ tools:
     - Start with "## Frequently Asked Questions" on its own line.
     - There are {num_questions} questions. Answer ALL of them.
     - Each question becomes an ### heading followed by a CONCISE answer ({faq_min_words}–{faq_max_words} words per answer).
+    - Write the question as plain text inside the ### heading — NO bold (**) or other inline formatting on the question.
     - *** STRICT TOTAL LIMIT: The ENTIRE FAQ section (heading + all Q&A) must be ≤ {faq_total_max} words. ***
 
     VOICE (critical):

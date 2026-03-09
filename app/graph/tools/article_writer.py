@@ -339,17 +339,7 @@ def article_writer_tool(
             block["h2"]["heading"], section_wc, cumulative, target_word_count,
         )
 
-    # ── 3. FAQ (only if not already an outline H2) ───────────────────────
-    if faq_questions_to_use and not has_faq_section:
-        remaining = max_total - cumulative
-        if remaining > hp_w.faq_remaining_budget_min:
-            faq_word_budget = max(remaining - conclusion_reserve, faq_reserve)
-            faq = _generate_faq(llm, faq_questions_to_use, primary_kw, language, max_total_words=faq_word_budget)
-            parts.append(faq)
-            cumulative += _word_count(faq)
-            logger.info("   📝 FAQ: %d words (cumulative: %d/%d)", _word_count(faq), cumulative, target_word_count)
-
-    # ── 4. Conclusion (only if not already an outline H2) ────────────────
+    # ── 3. Conclusion (only if not already an outline H2) ────────────────
     if not has_conclusion_section:
         remaining = max_total - cumulative
         if remaining > hp_w.conclusion_remaining_budget_min:
@@ -357,6 +347,16 @@ def article_writer_tool(
             parts.append(conclusion)
             cumulative += _word_count(conclusion)
             logger.info("   📝 Conclusion: %d words (cumulative: %d/%d)", _word_count(conclusion), cumulative, target_word_count)
+
+    # ── 4. FAQ (only if not already an outline H2) ───────────────────────
+    if faq_questions_to_use and not has_faq_section:
+        remaining = max_total - cumulative
+        if remaining > hp_w.faq_remaining_budget_min:
+            faq_word_budget = max(remaining, faq_reserve)
+            faq = _generate_faq(llm, faq_questions_to_use, primary_kw, language, max_total_words=faq_word_budget)
+            parts.append(faq)
+            cumulative += _word_count(faq)
+            logger.info("   📝 FAQ: %d words (cumulative: %d/%d)", _word_count(faq), cumulative, target_word_count)
 
     # ── 5. Assemble & report ─────────────────────────────────────────────
     full_article = "\n\n".join(parts)
