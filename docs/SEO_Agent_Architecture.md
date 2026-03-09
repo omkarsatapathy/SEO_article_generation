@@ -1,768 +1,404 @@
-# SEO Article Generation System — Full Architecture
-### Multi-Agent LangGraph System with PostgreSQL Persistence
+# SEO Article Generation System
+### Multi-Agent LangGraph Pipeline · FastAPI · PostgreSQL · Real-time SSE Logs
 
 ---
 
 ## 1. SYSTEM OVERVIEW
 
 ```
-INPUT:  { topic, word_count, language }
-          ↓
-  ┌─────────────────────┐
-  │   FastAPI Gateway   │  ← Creates job_id, pushes to queue
-  └────────┬────────────┘
-           ↓
-  ┌─────────────────────┐
-  │  LangGraph Graph    │  ← Compiled with PostgresSaver
-  │                     │
-  │  [ORCHESTRATOR]     │  ← Manages state, routes nodes
-  │       ↓             │
-  │  [RESEARCH AGENT]   │  ← SERP scraping + theme extraction
-  │       ↓             │
-  │  [OUTLINE AGENT]    │  ← H1/H2/H3 structure builder
-  │       ↓             │
-  │  [WRITER AGENT]     │  ← Full article generation
-  │       ↓             │
-  │  [QA AGENT]         │  ← SEO validation + scoring
-  │       ↓             │
-  │  [OUTPUT BUILDER]   │  ← Final structured output
-  └─────────────────────┘
-           ↓
-  ┌─────────────────────┐
-  │   PostgreSQL DB     │  ← Checkpoints + Job tracking
-  └─────────────────────┘
-           ↓
-OUTPUT: { article, seo_metadata, keywords, links, score }
+╔══════════════════════════════════════════════════════════════════════╗
+║  INPUT  { topic, word_count, language }                              ║
+╚══════════════════════════════════════════════════════════════════════╝
+                              │
+                              ▼
+        ┌─────────────────────────────────────┐
+        │         FastAPI Gateway             │
+        │  POST /jobs/  →  202 Accepted       │
+        │  Creates UUID job_id, starts BG     │
+        │  task in asyncio.to_thread()        │
+        └──────────────┬──────────────────────┘
+                       │
+                       ▼
+        ╔══════════════════════════════════════╗
+        ║       LangGraph StateGraph           ║
+        ║                                      ║
+        ║  START ──► ORCHESTRATOR              ║
+        ║                │                     ║
+        ║                ▼                     ║
+        ║  ┌────── RESEARCH ◄─────────┐        ║
+        ║  │  success   │  fail retry │        ║
+        ║  │            └─────────────┘        ║
+        ║  ▼              (max 3 retries)      ║
+        ║  ┌────── OUTLINE  ◄─────────┐        ║
+        ║  │  success   │  fail retry │        ║
+        ║  │            └─────────────┘        ║
+        ║  ▼              (max 3 retries)      ║
+        ║  ┌────── WRITER   ◄─────────┐───┐    ║
+        ║  │  success   │  fail retry │   |    ║
+        ║  │            └─────────────┘   |    ║
+        ║  │              (max 3 retries) |    ║
+        ║  │                              |    ║
+        ║  ▼    │  QA fail: score < 80    |    ║
+        ║  QA ──┘  → back to WRITER ──────┘    ║
+        ║  │         (max 3 revisions)         ║
+        ║  │ QA pass OR max revisions          ║
+        ║  ▼                                   ║
+        ║  OUTPUT BUILDER ──► END              ║
+        ║                                      ║
+        ║  (any node hits max retries) │       ║
+        ║    └──► ERROR HANDLER ──► END        ║
+        ╚══════════════════════════════════════╝
+                       │
+          ┌────────────┴────────────┐
+          ▼                         ▼
+  ┌───────────────┐       ┌─────────────────────┐
+  │  SQLAlchemy   │       │  PostgresSaver      │
+  │  ORM (async)  │       │  Checkpoint Store   │
+  │               │       │                     │
+  │ generation_   │       │  checkpoints        │
+  │   jobs        │       │  checkpoint_writes  │
+  │ generated_    │       │  checkpoint_blobs   │
+  │   articles    │       └─────────────────────┘
+  └───────────────┘
+          │
+          ▼
+╔══════════════════════════════════════════════════════════════════════╗
+║  OUTPUT  { final_article, seo_metadata, keywords, links, score }     ║
+╚══════════════════════════════════════════════════════════════════════╝
 ```
 
 ---
 
-## 2. STATE SCHEMA (The Backbone)
+## 2. NODE CATALOGUE
 
-This is the single most important design decision. Every node reads from and writes to this shared state.
+Each node in the graph is a **ReAct agent** (using `create_react_agent`) except the Writer, which runs tools sequentially for precise control over section-by-section generation.
 
-```python
-from typing import TypedDict, Optional, List, Annotated
-from pydantic import BaseModel
-from langgraph.graph.message import add_messages
-import operator
-
-# ─── Sub-models ───────────────────────────────────────────
-
-class SerpResult(BaseModel):
-    rank: int
-    url: str
-    title: str
-    snippet: str
-
-class Keyword(BaseModel):
-    word: str
-    frequency: int
-    is_primary: bool
-
-class OutlineSection(BaseModel):
-    level: str          # "H1", "H2", "H3"
-    heading: str
-    keywords: List[str]
-    word_target: int
-
-class InternalLink(BaseModel):
-    anchor_text: str
-    suggested_target_topic: str
-
-class ExternalReference(BaseModel):
-    source_url: str
-    context: str         # where in article to place this
-
-class SeoMetadata(BaseModel):
-    title_tag: str       # max 60 chars
-    meta_description: str  # max 160 chars
-    primary_keyword: str
-    secondary_keywords: List[str]
-
-class QAResult(BaseModel):
-    score: int           # 0–100
-    passed: bool
-    issues: List[str]
-    suggestions: List[str]
-
-# ─── Tool Output Models (Pydantic-enforced) ───────────────
-
-class ThemeAnalysis(BaseModel):
-    """Structured output from theme extraction tool."""
-    themes: List[str]                    # Top 5 common themes/subtopics
-    keywords: List[Keyword]              # Primary + secondary keywords, frequency-ranked
-    competitor_structures: List[dict]     # H-tag structures from competitor pages
-    faqs: List[str]                      # Questions from "People Also Ask"
-
-class ArticleDraft(BaseModel):
-    """Structured output from article writer tool."""
-    content: str                         # Full article text with markdown headings
-    word_count: int                      # Actual word count of generated content
-    sections_written: int                # Number of H2 sections produced
-
-class LinkingSuggestions(BaseModel):
-    """Structured output from linking tool."""
-    internal: List[InternalLink]         # 3-5 internal link suggestions
-    external: List[ExternalReference]    # 2-4 external reference suggestions
-
-# ─── MAIN SHARED STATE ────────────────────────────────────
-
-class ArticleGenerationState(TypedDict):
-    # ── Job Metadata ──
-    job_id: str
-    topic: str
-    word_count: int
-    language: str
-    status: str          # pending | researching | outlining | writing | qa | done | failed
-    created_at: str
-    updated_at: str
-
-    # ── Research Stage ──
-    serp_results: Optional[List[SerpResult]]
-    common_themes: Optional[List[str]]
-    extracted_keywords: Optional[List[Keyword]]
-    competitor_structures: Optional[List[dict]]  # H-tag structures from top results
-    faq_questions: Optional[List[str]]           # From "People Also Ask" SERP section
-
-    # ── Outline Stage ──
-    outline: Optional[List[OutlineSection]]
-
-    # ── Writing Stage ──
-    article_draft: Optional[str]
-    revision_count: int   # tracks how many QA revision cycles
-    
-    # ── QA Stage ──
-    qa_result: Optional[QAResult]
-
-    # ── Final Output ──
-    final_article: Optional[str]
-    seo_metadata: Optional[SeoMetadata]
-    internal_links: Optional[List[InternalLink]]
-    external_references: Optional[List[ExternalReference]]
-
-    # ── Error Tracking ──
-    errors: Annotated[List[str], operator.add]  # reducer: appends, never overwrites
-    retry_counts: dict    # { "research": 0, "outline": 0, "writer": 0, "qa": 0 }
 ```
-
-**Why this design?**
-- `Annotated[List[str], operator.add]` on `errors` means every node can append errors without overwriting previous ones
-- All optional fields default to None — nodes only populate what they own
-- `revision_count` tracks QA retry cycles to prevent infinite loops
-- `retry_counts` per node ensures max retries enforced independently per stage
+┌──────────────────┬─────────────────┬────────────────────────────────────────────┬───────────────────┐
+│  Node            │  Type           │  Tools                                     │  Max Iterations   │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  ORCHESTRATOR    │  ReAct Agent    │  validate_input_tool                       │  10               │
+│                  │                 │  job_init_tool                             │                   │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  RESEARCH        │  ReAct Agent    │  serp_fetch_tool                           │  10               │
+│                  │                 │  theme_extractor_tool                      │                   │
+│                  │                 │  faq_extractor_tool  (heuristic, no LLM)   │                   │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  OUTLINE         │  ReAct Agent    │  outline_builder_tool                      │  10               │
+│                  │                 │  keyword_mapper_tool (heuristic, no LLM)   │                   │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  WRITER          │  Sequential     │  article_writer_tool                       │  N/A              │
+│                  │  (direct calls) │  linking_tool                              │                   │
+│                  │                 │  metadata_generator_tool                   │                   │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  QA              │  ReAct Agent    │  seo_validator_tool                        │  8                │
+│                  │                 │  score_calculator_tool (penalty/bonus)     │                   │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  OUTPUT BUILDER  │  Plain function │  —  (assembly + references merge only)    │  N/A               │
+├──────────────────┼─────────────────┼────────────────────────────────────────────┼───────────────────┤
+│  ERROR HANDLER   │  Plain function │  —  (terminal node, sets status=failed)   │  N/A               │
+└──────────────────┴─────────────────┴────────────────────────────────────────────┴───────────────────┘
+```
 
 ---
 
-## 3. POSTGRESQL CHECKPOINTING (Crash Durability)
+## 3. CONDITIONAL ROUTING LOGIC
 
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                       ROUTING DECISION TABLE                               │
+├───────────────┬──────────────────────────────┬────────────────────────────-┤
+│  After Node   │  Condition                   │  Destination                │
+├───────────────┼──────────────────────────────┼─────────────────────────────┤
+│  RESEARCH     │  retry_counts["research"]    │  error_handler              │
+│               │    >= MAX_RETRIES (3)        │                             │
+│               │  serp_results present        │  outline                    │
+│               │  (else)                      │  research  ← retry          │
+├───────────────┼──────────────────────────────┼─────────────────────────────┤
+│  OUTLINE      │  retry_counts["outline"]     │  error_handler              │
+│               │    >= MAX_RETRIES (3)        │                             │
+│               │  outline present             │  writer                     │
+│               │  (else)                      │  outline   ← retry          │
+├───────────────┼──────────────────────────────┼─────────────────────────────┤
+│  WRITER       │  retry_counts["writer"]      │  error_handler              │
+│               │    >= MAX_RETRIES (3)        │                             │
+│               │  article_draft present       │  qa                         │
+│               │  (else)                      │  writer    ← retry          │
+├───────────────┼──────────────────────────────┼─────────────────────────────┤
+│  QA           │  status == "done"            │  output                     │
+│               │  revision_count              │  output  (best-effort pub.) │
+│               │    >= MAX_REVISIONS (3)      │                             │
+│               │  (else — score too low)      │  writer   ← revision loop   │
+└───────────────┴──────────────────────────────┴─────────────────────────────┘
+```
+
+> The QA → Writer loop passes accumulated `qa_result.issues` and `qa_result.suggestions`
+> directly in state so the Writer receives first-class feedback on each revision cycle.
+
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| `Annotated[List[str], operator.add]` on `errors` | Every node appends errors; nothing gets clobbered |
+| All stage fields Optional | Nodes only populate what they own; safe for partial states |
+| `revision_count` int | Caps the QA → Writer revision loop cleanly |
+| `SeoMetadata` auto-truncation validators | LLM output violating char limits is fixed silently |
+| `CompetitorStructure` Pydantic model | Typed headings list instead of raw `dict` |
+| `OutlineOutput` wrapper | `with_structured_output` requires an object, not a bare list |
+
+---
+
+## 5. POSTGRESQL — TWO SEPARATE LAYERS
+
+The system uses PostgreSQL for two distinct purposes with separate code paths:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                    PostgreSQL Database                             │
+│                                                                    │
+│  ┌──────────────────────────────┐  ┌────────────────────────────┐  │
+│  │   SQLAlchemy Async ORM       │  │   LangGraph PostgresSaver  │  │
+│  │   (app/db/)                  │  │   (app/db/checkpointer.py) │  │
+│  │                              │  │                            │  │
+│  │  generation_jobs             │  │  checkpoints               │  │
+│  │  ├─ job_id  UUID PK          │  │  checkpoint_writes         │  │
+│  │  ├─ topic   TEXT             │  │  checkpoint_blobs          │  │
+│  │  ├─ word_count INT           │  │                            │  │
+│  │  ├─ language VARCHAR(10)     │  │  thread_id links back to   │  │
+│  │  ├─ status  VARCHAR(20)      │  │  generation_jobs.thread_id │  │
+│  │  ├─ thread_id TEXT UNIQUE    │  │                            │  │
+│  │  ├─ error_message TEXT       │  │  Key: "seo-job:{job_id}"   │  │
+│  │  ├─ seo_score INT            │  └────────────────────────────┘  │
+│  │  └─ timestamps               │                                  │
+│  │                              │                                  │
+│  │  generated_articles          │                                  │
+│  │  ├─ id        UUID PK        │                                  │
+│  │  ├─ job_id    UUID FK        │                                  │
+│  │  ├─ final_article TEXT       │                                  │
+│  │  ├─ seo_metadata  JSON       │                                  │
+│  │  ├─ keywords      JSON       │                                  │
+│  │  ├─ internal_links JSON      │                                  │
+│  │  ├─ external_refs  JSON      │                                  │
+│  │  ├─ seo_score  INT           │                                  │
+│  │  └─ word_count_actual INT    │                                  │
+│  └──────────────────────────────┘                                  │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Checkpointing setup** (`app/db/checkpointer.py`):
 ```python
-from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
-
-DB_URI = "postgresql://user:pass@localhost:5432/seo_agent?sslmode=require"
-
-# Connection pool — critical for production, never use single connections
-pool = ConnectionPool(
-    conninfo=DB_URI,
-    max_size=10,
-    kwargs={"autocommit": True}
-)
-
+pool = ConnectionPool(conninfo=db_url, max_size=10, kwargs={"autocommit": True})
 with pool.connection() as conn:
     checkpointer = PostgresSaver(conn)
-    checkpointer.setup()   # Creates checkpoint tables on first run
-
-# Compile graph with checkpointer attached
-graph = builder.compile(checkpointer=checkpointer)
+    checkpointer.setup()     # creates the three checkpoint tables once
 ```
 
-**What PostgresSaver creates in your DB:**
+**Crash resume pattern:**
 ```
-Tables:
-  checkpoints          ← full state snapshot per superstep
-  checkpoint_writes    ← pending writes (partial node outputs)
-  checkpoint_blobs     ← serialized state blobs
-```
+Pipeline: Research ✅ → Outline ✅ → Writer 💥 CRASH
 
-**How crash resume works:**
-```
-Graph runs: Node1 ✅ → Node2 ✅ → Node3 💥 CRASH
-                                       ↑
-                             checkpoint saved here
-
-On restart:
-  graph.invoke(None, config={"configurable": {"thread_id": "job_abc123"}})
-                 ↑
-           None = "resume from last checkpoint"
-           
-Result: Node1 ✅ SKIP → Node2 ✅ SKIP → Node3 🔄 RETRY
-```
-
-**The thread_id is your job_id:**
-```python
-config = {
-    "configurable": {
-        "thread_id": f"seo-job:{job_id}",
-        "checkpoint_ns": "seo_agent_v1"   # versioning for schema migrations
-    }
-}
-```
-
----
-
-## 4. THE GRAPH NODES (Step by Step)
-
-### Node 1: ORCHESTRATOR (Entry Point)
-
-```
-Responsibility: Validate input, create job, initialize state
-```
-
-```python
-def orchestrator_node(state: ArticleGenerationState) -> dict:
-    """
-    - Validates topic, word_count, language
-    - Sets job_id (uuid4)
-    - Initializes retry_counts
-    - Sets status = "researching"
-    """
-    return {
-        "job_id": str(uuid.uuid4()),
-        "status": "researching",
-        "retry_counts": {"research": 0, "outline": 0, "writer": 0, "qa": 0},
-        "revision_count": 0
-    }
-```
-
----
-
-### Node 2: RESEARCH AGENT
-
-```
-Responsibility: Fetch SERP data → extract themes, keywords, FAQs
-Tools: serp_fetch_tool, theme_extractor_tool
-```
-
-```python
-# Tool 1: SERP Fetcher — returns List[SerpResult] (Pydantic-validated)
-@tool
-def serp_fetch_tool(query: str) -> List[SerpResult]:
-    """
-    Fetches top 10 Google results via SerpAPI.
-    Falls back to mock data if API fails.
-    Returns: list of SerpResult (Pydantic-validated)
-    """
-    try:
-        response = requests.get(
-            "https://serpapi.com/search",
-            params={"q": query, "num": 10, "api_key": SERP_API_KEY}
-        )
-        raw_results = parse_serp_response(response.json())
-        return [SerpResult(**r) for r in raw_results]  # Pydantic validation
-    except Exception as e:
-        # Fallback to mock data — graceful degradation
-        return [SerpResult(**r) for r in get_mock_serp_data(query)]
-
-# Tool 2: Theme Extractor — returns ThemeAnalysis (Pydantic-enforced via structured output)
-@tool
-def theme_extractor_tool(serp_results: List[SerpResult]) -> ThemeAnalysis:
-    """
-    Uses LLM with structured output to extract:
-    - Common themes across all 10 results
-    - Primary + secondary keywords (frequency-ranked)
-    - H-tag structures from competitor pages
-    - FAQ questions from "People Also Ask"
-    
-    Returns: ThemeAnalysis (Pydantic model, enforced by LLM structured output)
-    """
-    structured_llm = llm.with_structured_output(ThemeAnalysis)
-    
-    return structured_llm.invoke(
-        f"""Analyze these 10 search results and extract themes, keywords, 
-        competitor heading structures, and FAQ questions.
-        
-        Results: {[r.model_dump() for r in serp_results]}"""
-    )  # Returns ThemeAnalysis — guaranteed schema compliance
-
-# Research Node
-def research_node(state: ArticleGenerationState) -> dict:
-    try:
-        serp_data: List[SerpResult] = serp_fetch_tool.invoke(state["topic"])
-        analysis: ThemeAnalysis = theme_extractor_tool.invoke(serp_data)
-        return {
-            "serp_results": serp_data,
-            "common_themes": analysis.themes,
-            "extracted_keywords": analysis.keywords,
-            "competitor_structures": analysis.competitor_structures,
-            "faq_questions": analysis.faqs,
-            "status": "outlining"
-        }
-    except Exception as e:
-        return {
-            "errors": [f"Research failed: {str(e)}"],
-            "retry_counts": {**state["retry_counts"], "research": state["retry_counts"]["research"] + 1}
-        }
-```
-
----
-
-### Node 3: OUTLINE AGENT
-
-```
-Responsibility: Build structured H1/H2/H3 outline from themes
-Tools: outline_builder_tool
-```
-
-```python
-# Pydantic wrapper for outline output — List[OutlineSection] can't be passed
-# directly to with_structured_output, so we wrap it
-class OutlineOutput(BaseModel):
-    """Wrapper for structured outline output."""
-    sections: List[OutlineSection]
-
-@tool
-def outline_builder_tool(themes: List[str], keywords: List[Keyword], word_count: int) -> List[OutlineSection]:
-    """
-    Builds SEO-optimized article structure (Pydantic-enforced):
-    - H1: Primary keyword + value proposition  (1)
-    - H2: Major sections — one per top theme   (4-6)
-    - H3: Subsections under each H2            (2-3 per H2)
-    
-    Distributes word_count proportionally across sections.
-    Assigns keywords to specific sections.
-    Returns: List[OutlineSection] via with_structured_output(OutlineOutput)
-    """
-    structured_llm = llm.with_structured_output(OutlineOutput)
-    
-    result: OutlineOutput = structured_llm.invoke(
-        f"""Build an SEO article outline for these themes: {themes}
-        Primary keyword: {keywords[0].word}
-        Total words: {word_count}
-        
-        Create sections with: level (H1/H2/H3), heading, keywords, word_target"""
-    )
-    return result.sections  # Unwrap to List[OutlineSection]
-
-def outline_node(state: ArticleGenerationState) -> dict:
-    try:
-        outline: List[OutlineSection] = outline_builder_tool.invoke({
-            "themes": state["common_themes"],
-            "keywords": state["extracted_keywords"],
-            "word_count": state["word_count"]
-        })
-        return {
-            "outline": outline,
-            "status": "writing"
-        }
-    except Exception as e:
-        return {
-            "errors": [f"Outline failed: {str(e)}"],
-            "retry_counts": {**state["retry_counts"], "outline": state["retry_counts"]["outline"] + 1}
-        }
-```
-
----
-
-### Node 4: WRITER AGENT
-
-```
-Responsibility: Write full article from outline
-Tools: article_writer_tool, metadata_generator_tool, linking_tool
-```
-
-```python
-@tool
-def article_writer_tool(outline: List[OutlineSection], keywords: List[Keyword], 
-                        themes: List[str], language: str, 
-                        faq_questions: List[str]) -> ArticleDraft:
-    """
-    Writes full article section by section (Pydantic-enforced).
-    - Natural tone, NOT robotic
-    - Primary keyword in: H1, first paragraph, 2-3 H2s
-    - Keyword density: 1-2% (not stuffed)
-    - Each section word count matches outline targets
-    - FAQ section appended at end
-    Returns: ArticleDraft (content, word_count, sections_written)
-    """
-    structured_llm = llm.with_structured_output(ArticleDraft)
-    
-    return structured_llm.invoke(
-        f"""Write a complete SEO-optimized article in {language}.
-        
-        Outline: {[s.model_dump() for s in outline]}
-        Primary keyword: {keywords[0].word}
-        Secondary keywords: {[k.word for k in keywords if not k.is_primary]}
-        Themes to cover: {themes}
-        FAQ questions to include: {faq_questions}
-        
-        Requirements:
-        - Natural, human-readable tone
-        - Primary keyword in H1 and first paragraph
-        - Keyword density 1-2%
-        - Follow the outline section structure exactly
-        - Include FAQ section at the end"""
-    )  # Returns ArticleDraft — guaranteed schema compliance
-
-@tool  
-def metadata_generator_tool(article: str, primary_keyword: str) -> SeoMetadata:
-    """
-    Generates SEO metadata (Pydantic-enforced):
-    - Title tag: primary keyword + value (≤60 chars)
-    - Meta description: keyword + benefit + CTA (≤160 chars)
-    Returns: SeoMetadata
-    """
-    structured_llm = llm.with_structured_output(SeoMetadata)
-    
-    return structured_llm.invoke(
-        f"""Generate SEO metadata for this article.
-        Primary keyword: {primary_keyword}
-        Article (first 500 chars): {article[:500]}
-        
-        Rules:
-        - title_tag: max 60 characters, must include primary keyword
-        - meta_description: max 160 characters, must include keyword + CTA
-        - List primary and secondary keywords found in the article"""
-    )  # Returns SeoMetadata — guaranteed schema compliance
-
-@tool
-def linking_tool(outline: List[OutlineSection], themes: List[str]) -> LinkingSuggestions:
-    """
-    Generates internal and external link suggestions (Pydantic-enforced).
-    Internal links: 3-5 anchor texts + suggested target topics
-    External links: 2-4 authoritative source suggestions + placement context
-    Returns: LinkingSuggestions
-    """
-    structured_llm = llm.with_structured_output(LinkingSuggestions)
-    
-    return structured_llm.invoke(
-        f"""Suggest internal and external links for an SEO article.
-        
-        Article outline: {[s.model_dump() for s in outline]}
-        Themes covered: {themes}
-        
-        Internal links: 3-5 suggestions with anchor_text and suggested_target_topic
-        External links: 2-4 authoritative sources with source_url and placement context"""
-    )  # Returns LinkingSuggestions — guaranteed schema compliance
-
-def writer_node(state: ArticleGenerationState) -> dict:
-    try:
-        draft: ArticleDraft = article_writer_tool.invoke({
-            "outline": state["outline"],
-            "keywords": state["extracted_keywords"],
-            "themes": state["common_themes"],
-            "language": state["language"],
-            "faq_questions": state["faq_questions"]
-        })
-        metadata: SeoMetadata = metadata_generator_tool.invoke({
-            "article": draft.content,
-            "primary_keyword": state["extracted_keywords"][0].word
-        })
-        links: LinkingSuggestions = linking_tool.invoke({
-            "outline": state["outline"],
-            "themes": state["common_themes"]
-        })
-        return {
-            "article_draft": draft.content,
-            "seo_metadata": metadata,
-            "internal_links": links.internal,
-            "external_references": links.external,
-            "status": "qa"
-        }
-    except Exception as e:
-        return {
-            "errors": [f"Writing failed: {str(e)}"],
-            "retry_counts": {**state["retry_counts"], "writer": state["retry_counts"]["writer"] + 1}
-        }
-```
-
----
-
-### Node 5: QA AGENT
-
-```
-Responsibility: Validate SEO quality, score article, trigger revision if needed
-Tools: seo_validator_tool
-```
-
-```python
-@tool
-def seo_validator_tool(article: str, metadata: SeoMetadata, 
-                      keywords: List[Keyword], word_count: int) -> QAResult:
-    """
-    Validates article against SEO criteria (Pydantic-enforced).
-    
-    Programmatic checks (no LLM needed):
-    ✅ Primary keyword in H1
-    ✅ Primary keyword in first 100 words
-    ✅ Keyword density 1-2%
-    ✅ At least 2 H2s contain primary/secondary keywords
-    ✅ Word count within ±10% of target
-    ✅ Meta title ≤60 chars
-    ✅ Meta description ≤160 chars
-    ✅ No keyword stuffing (>3% density = fail)
-    ✅ Article has proper H1→H2→H3 hierarchy
-    ✅ Minimum 300 words per H2 section
-    
-    Returns: QAResult (score, passed, issues, suggestions)
-    """
-    issues = []
-    suggestions = []
-    score = 100
-    primary_kw = next((k.word for k in keywords if k.is_primary), keywords[0].word)
-    
-    # Example programmatic checks — deduct points per failure
-    if primary_kw.lower() not in article[:500].lower():
-        issues.append("Primary keyword missing from first 100 words")
-        score -= 15
-    
-    if len(metadata.title_tag) > 60:
-        issues.append(f"Title tag too long: {len(metadata.title_tag)} chars (max 60)")
-        score -= 10
-    
-    if len(metadata.meta_description) > 160:
-        issues.append(f"Meta description too long: {len(metadata.meta_description)} chars (max 160)")
-        score -= 10
-    
-    actual_word_count = len(article.split())
-    if abs(actual_word_count - word_count) > word_count * 0.10:
-        issues.append(f"Word count {actual_word_count} is outside ±10% of target {word_count}")
-        score -= 10
-    
-    # ... additional checks for keyword density, heading hierarchy, etc.
-    
-    return QAResult(
-        score=max(score, 0),
-        passed=score >= 80,
-        issues=issues,
-        suggestions=suggestions
-    )  # Returns QAResult — Pydantic-validated, no LLM parsing needed
-
-def qa_node(state: ArticleGenerationState) -> dict:
-    try:
-        result: QAResult = seo_validator_tool.invoke({
-            "article": state["article_draft"],
-            "metadata": state["seo_metadata"],
-            "keywords": state["extracted_keywords"],
-            "word_count": state["word_count"]
-        })
-        
-        if result.passed:
-            return {
-                "qa_result": result,
-                "final_article": state["article_draft"],
-                "status": "done"
-            }
-        else:
-            return {
-                "qa_result": result,
-                "revision_count": state["revision_count"] + 1,
-                "status": "writing"   # route back to writer
-            }
-    except Exception as e:
-        return {"errors": [f"QA failed: {str(e)}"]}
-```
-
----
-
-## 5. THE FULL GRAPH WITH CONDITIONAL EDGES
-
-```python
-from langgraph.graph import StateGraph, START, END
-
-builder = StateGraph(ArticleGenerationState)
-
-# ── Add all nodes ──────────────────────────────
-builder.add_node("orchestrator", orchestrator_node)
-builder.add_node("research",     research_node)
-builder.add_node("outline",      outline_node)
-builder.add_node("writer",       writer_node)
-builder.add_node("qa",           qa_node)
-builder.add_node("output",       output_builder_node)
-builder.add_node("error_handler",error_handler_node)
-
-# ── Entry point ────────────────────────────────
-builder.add_edge(START, "orchestrator")
-builder.add_edge("orchestrator", "research")
-
-# ── Conditional routing after each agent ───────
-
-def route_after_research(state):
-    if state["retry_counts"]["research"] >= 3:
-        return "error_handler"
-    if state.get("serp_results"):
-        return "outline"
-    return "research"   # retry
-
-def route_after_outline(state):
-    if state["retry_counts"]["outline"] >= 3:
-        return "error_handler"
-    if state.get("outline"):
-        return "writer"
-    return "outline"    # retry
-
-def route_after_writer(state):
-    if state["retry_counts"]["writer"] >= 3:
-        return "error_handler"
-    if state.get("article_draft"):
-        return "qa"
-    return "writer"     # retry
-
-def route_after_qa(state):
-    if state["status"] == "done":
-        return "output"
-    if state["revision_count"] >= 3:  # max 3 QA revision cycles
-        return "output"               # publish best effort
-    return "writer"                   # revision cycle
-
-builder.add_conditional_edges("research", route_after_research)
-builder.add_conditional_edges("outline",  route_after_outline)
-builder.add_conditional_edges("writer",   route_after_writer)
-builder.add_conditional_edges("qa",       route_after_qa)
-builder.add_edge("output", END)
-builder.add_edge("error_handler", END)
-
-graph = builder.compile(checkpointer=checkpointer)
-```
-
----
-
-## 6. GRAPH FLOW DIAGRAM
-
-```
-START
-  │
-  ▼
-[ORCHESTRATOR] ──────────────────────────────────────────────────
-  │                                                               │
-  ▼                                                               │
-[RESEARCH] ──fail──→ retry (max 3) ──────────────────→ [ERROR HANDLER]
-  │ success                                                       │
-  ▼                                                               │
-[OUTLINE]  ──fail──→ retry (max 3) ──────────────────→ [ERROR HANDLER]
-  │ success                                                       │
-  ▼                                                               │
-[WRITER]   ──fail──→ retry (max 3) ──────────────────→ [ERROR HANDLER]
-  │ success                                                       │
-  ▼                                                               │
- [QA]                                                             │
-  │                                                               │
-  ├── score ≥ 80 ─────────────────────────────────────▶          │
-  │                                                    │          │
-  └── score < 80 & revisions < 3 ──▶ [WRITER] (loop)  │          │
-                                                       ▼          ▼
-                                                  [OUTPUT BUILDER]
-                                                       │
-                                                      END
-```
-
----
-
-## 7. DATABASE SCHEMA (PostgreSQL)
-
-```sql
--- Job tracking table (your own, separate from LangGraph checkpoints)
-CREATE TABLE generation_jobs (
-    job_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    topic           TEXT NOT NULL,
-    word_count      INT  DEFAULT 1500,
-    language        VARCHAR(10) DEFAULT 'en',
-    status          VARCHAR(20) DEFAULT 'pending',
-    -- pending | researching | outlining | writing | qa | done | failed
-    thread_id       TEXT UNIQUE,    -- links to LangGraph checkpoint
-    error_message   TEXT,
-    seo_score       INT,
-    created_at      TIMESTAMPTZ DEFAULT NOW(),
-    updated_at      TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Final article output table
-CREATE TABLE generated_articles (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    job_id          UUID REFERENCES generation_jobs(job_id),
-    topic           TEXT,
-    final_article   TEXT,
-    seo_metadata    JSONB,
-    keywords        JSONB,
-    internal_links  JSONB,
-    external_refs   JSONB,
-    seo_score       INT,
-    word_count_actual INT,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
-);
-
--- LangGraph auto-creates these tables via checkpointer.setup():
--- checkpoints, checkpoint_writes, checkpoint_blobs
-```
-
----
-
-## 8. FAILURE HANDLING — THE FULL PICTURE
-
-```
-SCENARIO 1: External API failure (SerpAPI down)
-─────────────────────────────────────────────────
-research_node()
-  └── serp_fetch_tool() throws ConnectionError
-        └── try/except catches it
-              └── fallback: get_mock_serp_data()   ← graceful degradation
-                    └── logs error to state["errors"]
-                          └── continues normally ✅
-
-SCENARIO 2: LLM timeout
-─────────────────────────────────────────────────
-writer_node()
-  └── article_writer_tool() times out
-        └── except block catches
-              └── increments retry_counts["writer"]
-                    └── route_after_writer() sees no article_draft
-                          └── routes BACK to writer node 🔄
-                                └── max 3 retries → error_handler
-
-SCENARIO 3: Process crash mid-execution
-─────────────────────────────────────────────────
-Research ✅ checkpoint saved
-Outline  ✅ checkpoint saved
-Writer   💥 CRASH (pod restart, OOM, etc.)
-
-On restart:
+On restart — pass None as input to signal "resume":
   graph.invoke(None, config={"configurable": {"thread_id": "seo-job:abc123"}})
-                ↑
-          None signals "resume"
-          LangGraph reads last checkpoint
-          Finds: Research ✅ Outline ✅ Writer = PENDING
-          Resumes from Writer — Research & Outline NEVER re-run ✅
 
-SCENARIO 4: QA fails score threshold
-─────────────────────────────────────────────────
-QA scores article 62/100
-  └── qa_result.passed = False
-        └── route_after_qa() → back to "writer"
-              └── Writer gets QA feedback in state
-                    └── Rewrites with improvements
-                          └── QA rescores → 84/100 ✅
+LangGraph finds the last checkpoint → skips Research + Outline → retries Writer only.
+```
+
+> **Note:** The background pipeline currently runs with `checkpointer=None` (in-memory only).
+> `get_checkpointer()` and `_resume_pipeline()` are wired and ready — enabling full
+> crash-durability is a one-line change in `_run_pipeline`.
+
+---
+
+## 6. API LAYER
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                        FastAPI Application                          │
+│                        (app/main.py)                               │
+│                                                                     │
+│  Router: /jobs  ─────────────────────────────────────────────────  │
+│                                                                     │
+│  POST  /jobs/                                                       │
+│    Body: { topic, word_count?, language? }                          │
+│    → Creates GenerationJob row (status=pending)                     │
+│    → Spawns asyncio.to_thread(graph.invoke, ...) background task   │
+│    → Returns 202 { job_id }                                         │
+│                                                                     │
+│  GET   /jobs/{job_id}                                               │
+│    → Returns JobStatusResponse { job_id, status, seo_score, ... }  │
+│                                                                     │
+│  GET   /jobs/{job_id}/result                                        │
+│    → Returns ArticleResultResponse:                                 │
+│       { article, seo_metadata, keywords, internal_links,           │
+│         external_references, seo_score, word_count_actual }        │
+│                                                                     │
+│  POST  /jobs/{job_id}/resume                                        │
+│    → Resumes interrupted pipeline from last LangGraph checkpoint    │
+│                                                                     │
+│  Router: /logs  ─────────────────────────────────────────────────  │
+│                                                                     │
+│  GET   /logs/stream                                                 │
+│    → Server-Sent Events (SSE) — real-time log streaming            │
+│    → Replays ring-buffer (last 400 entries) on connect             │
+│    → Broadcasts every log.INFO+ record from the entire process     │
+│    → Keep-alive ping every 20 s                                     │
+│                                                                     │
+│  GET   /health  →  { "status": "healthy" }                         │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Why `asyncio.to_thread` for the graph?**
+
+The LangGraph graph is synchronous. Running it directly would block the asyncio event loop, preventing SSE clients (`/logs/stream`) from receiving live log updates during article generation. `asyncio.to_thread` offloads the graph to a thread pool, keeping the event loop free.
+
+---
+
+## 7. REAL-TIME LOG STREAMING (SSE)
+
+```
+app/api/log_stream.py
+
+  _BroadcastHandler (logging.Handler)
+        │
+        │  attaches to logging.getLogger() root
+        │  captures EVERY log record process-wide
+        │
+        ▼
+  _buffer: deque(maxlen=400)   ← ring buffer, newest evicts oldest
+        │
+        ├──► _queues: List[asyncio.Queue]   ← one Queue per SSE client
+        │
+        └──► loop.call_soon_threadsafe()    ← safe delivery from sync threads
+
+  GET /logs/stream  (StreamingResponse)
+    1. Replays entire _buffer to new client (catch-up)
+    2. Listens on personal Queue with 20s timeout
+    3. Sends each entry as SSE event:
+         data: {"level": "INFO", "name": "app.graph.nodes.writer", "text": "..."}
+    4. Sends ": keep-alive" if no events for 20s
+    5. Removes Queue on disconnect
 ```
 
 ---
 
-## 9. PROJECT FOLDER STRUCTURE
+## 8. QA SCORING SYSTEM
+
+The QA agent runs `seo_validator_tool` (programmatic checks) and `score_calculator_tool` (penalty/bonus adjuster), then decides pass/fail.
 
 ```
-seo-agent/
+Starting score: 100
+
+Penalty catalogue (from hyperparams.yaml)
+──────────────────────────────────────────────────────────────────────
+  - keyword_in_h1                  −15  primary keyword absent from H1
+  - keyword_in_intro               −15  absent from first 500 chars of body
+  - keyword_density_out_of_range   −10  density < 0.5% or > 3.0%
+  - keyword_stuffing               −10  additional density penalty
+  - h2_keyword_coverage            −10  fewer than 2 H2s contain a keyword
+  - word_count_marginal            −10  75–85% or 115–150% of target
+  - word_count_significant         −20  60–75% of target
+  - word_count_severe              −30  < 60% or > 200% of target
+  - title_tag_length               −10  title_tag > 60 chars
+  - meta_description_length        −10  meta_description > 160 chars
+  - heading_hierarchy              −10  H3 without parent H2 etc.
+  - short_section                  − 5  H2 section < 100 words
+  - link_placeholders              − 5  unresolved "[LINK]" markers in text
+  - content_truncated              − 5  article ends mid-sentence
+──────────────────────────────────────────────────────────────────────
+
+Pass threshold: score ≥ 80
+
+If score < 80 AND revision_count < max_revisions (3):
+  → Route back to WRITER with qa_result in state
+
+If score < 80 AND revision_count >= max_revisions:
+  → Route to OUTPUT BUILDER (publish best-effort)
+```
+
+---
+
+## 9. OUTPUT BUILDER
+
+The Output Builder is a plain function (no LLM, no agent). Its job is final assembly:
+
+```
+1. Prefer final_article; fall back to article_draft
+2. Build References section:
+   a. Pull from external_references (agent-picked authoritative sources) first
+   b. Fill remaining slots from serp_results (sorted by rank)
+   c. Deduplicate by URL; cap at 5 links
+   d. Append as Markdown: "## References\n1. [title](url)"
+3. Log completion banner with word count, SEO score, job_id
+4. Return { final_article, status: "done", updated_at }
+```
+
+---
+
+## 10. CONFIGURATION SYSTEM
+
+Three YAML files under `config/` provide all tuneable parameters:
+
+```
+config/
+├── hyperparams.yaml   ← all numerical thresholds, limits, word-count targets
+├── settings.yaml      ← app title, version, CORS origins, logging format
+└── prompts.yaml       ← agent system prompts (one per node)
+```
+
+Accessed via a unified `cfg` object:
+
+```python
+cfg.hyperparams.pipeline.max_retries        # 3
+cfg.hyperparams.pipeline.max_revisions      # 3
+cfg.hyperparams.article.word_count_default  # 1500
+cfg.hyperparams.qa.pass_score               # 80
+cfg.hyperparams.agent.research_max_iterations  # 10
+cfg.prompts.agents.research                 # system prompt string
+cfg.settings.app.title                      # "SEO Article Generation API"
+```
+
+**Key hyperparameters at a glance:**
+
+| Parameter | Value | Description |
+|---|---|---|
+| `pipeline.max_retries` | 3 | Max retries per node before error_handler |
+| `pipeline.max_revisions` | 3 | Max QA→Writer revision cycles |
+| `pipeline.default_word_count` | 1500 | Default article length |
+| `qa.pass_score` | 80 | Minimum SEO score to pass QA |
+| `article.word_count_min` | 500 | API input validation floor |
+| `article.word_count_max` | 5000 | API input validation ceiling |
+| `writing.word_count_ceiling_multiplier` | 1.15 | Hard upper cap = target × 1.15 |
+| `qa.thresholds.keyword_density_min` | 0.5% | Under-optimised threshold |
+| `qa.thresholds.keyword_density_max` | 3.0% | Keyword stuffing threshold |
+
+---
+
+## 11. PROJECT STRUCTURE
+
+```
+SEO_article_generation/
+│
 ├── app/
-│   ├── main.py                  # FastAPI entry point
+│   ├── main.py                     FastAPI entry point, CORS, lifespan
+│   ├── config.py                   Env var settings (DATABASE_URL, etc.)
+│   │
 │   ├── api/
-│   │   └── routes.py            # POST /jobs, GET /jobs/{id}
+│   │   ├── routes.py               REST endpoints (/jobs/*)
+│   │   └── log_stream.py           SSE log broadcast (/logs/stream)
+│   │
 │   ├── graph/
-│   │   ├── state.py             # ArticleGenerationState TypedDict
-│   │   ├── graph_builder.py     # Nodes + edges assembly
+│   │   ├── state.py                ArticleGenerationState + all sub-models
+│   │   ├── graph_builder.py        build_graph() + all routing functions
+│   │   │
 │   │   ├── nodes/
-│   │   │   ├── orchestrator.py
-│   │   │   ├── research.py
-│   │   │   ├── outline.py
-│   │   │   ├── writer.py
-│   │   │   ├── qa.py
-│   │   │   └── output_builder.py
+│   │   │   ├── orchestrator.py     ReAct agent: validate_input + job_init
+│   │   │   ├── research.py         ReAct agent: serp_fetch + theme + faq
+│   │   │   ├── outline.py          ReAct agent: outline_builder + kw_mapper
+│   │   │   ├── writer.py           Sequential: article + linking + metadata
+│   │   │   ├── qa.py               ReAct agent: seo_validator + score_calc
+│   │   │   └── output_builder.py   Plain fn: assembly + references merge
+│   │   │
 │   │   └── tools/
 │   │       ├── serp_fetch.py
 │   │       ├── theme_extractor.py
@@ -771,66 +407,89 @@ seo-agent/
 │   │       ├── metadata_generator.py
 │   │       ├── linking_tool.py
 │   │       └── seo_validator.py
-│   ├── db/
-│   │   ├── models.py            # SQLAlchemy models
-│   │   ├── repository.py        # DB read/write helpers
-│   │   └── checkpointer.py      # PostgresSaver setup
-│   └── config.py                # Env vars, settings
+│   │
+│   └── db/
+│       ├── models.py               SQLAlchemy ORM: GenerationJob + GeneratedArticle
+│       ├── repository.py           Async CRUD: create/get/update job, save article
+│       └── checkpointer.py         PostgresSaver pool setup
+│
+├── config/
+│   ├── config.py                   Unified cfg loader (merges all YAMLs)
+│   ├── hyperparams.yaml            Numerical limits and thresholds
+│   ├── settings.yaml               App settings and CORS
+│   └── prompts.yaml                Agent system prompts
+│
 ├── tests/
+│   ├── conftest.py
 │   ├── test_serp.py
 │   ├── test_outline.py
+│   ├── test_coerce_links.py
 │   ├── test_seo_validator.py
 │   └── test_graph_flow.py
-├── alembic/                     # DB migrations
-├── docker-compose.yml           # Postgres + app
-├── .env
-└── README.md
+│
+├── GUI/
+│   └── index.html                  Simple browser UI
+│
+├── docs/                           Architecture diagrams (HTML)
+├── Dockerfile
+├── docker-compose.yml              App + PostgreSQL in one command
+├── pyproject.toml
+└── requirements.txt
 ```
 
 ---
 
-## 10. API ENDPOINTS
+## 12. TECH STACK
 
-```
-POST /jobs
-  Body: { topic, word_count, language }
-  Returns: { job_id, status: "pending" }
-
-GET /jobs/{job_id}
-  Returns: { job_id, status, created_at, ... }
-
-GET /jobs/{job_id}/result
-  Returns: { article, seo_metadata, keywords, links, score }
-
-POST /jobs/{job_id}/resume
-  Used when: job was interrupted, resume from checkpoint
-  Calls: graph.invoke(None, config={"thread_id": job_id})
-```
-
----
-
-## 11. TECH STACK SUMMARY
-
-| Layer | Technology | Why |
+| Layer | Technology | Role |
 |---|---|---|
-| Agent Framework | LangGraph | Stateful graph, checkpointing, conditional edges |
-| LLM | Claude 3.5 Sonnet via API | Cost-effective, strong writing quality |
-| Checkpointing | PostgresSaver | Production-grade, crash recovery |
-| Job DB | PostgreSQL | Same DB, unified storage |
-| API Layer | FastAPI | Async, Pydantic-native |
-| SERP Data | SerpAPI / mock fallback | Real search data with graceful degradation |
-| Observability | LangSmith | Traces, token costs, step timing |
-| Containerization | Docker Compose | Postgres + app in one command |
+| Agent framework | LangGraph | Stateful graph, conditional edges, checkpointing |
+| LLM | Configurable via `get_llm()` | Article generation, theme extraction, QA |
+| API | FastAPI (async) | REST endpoints + SSE log stream |
+| ORM | SQLAlchemy async + asyncpg | Job tracking and article persistence |
+| Checkpointing | LangGraph PostgresSaver | Crash-recovery state snapshots |
+| Database | PostgreSQL | ORM tables + checkpoint tables |
+| Validation | Pydantic v2 | All agent inputs/outputs, API models |
+| Configuration | YAML + dataclasses | Decoupled hyperparams, prompts, settings |
+| SERP data | SerpAPI + mock fallback | Real search data with graceful degradation |
+| Containerisation | Docker + Compose | Reproducible dev/prod environment |
 
 ---
 
-## 12. KEY DESIGN PRINCIPLES FOLLOWED
+## 13. KEY DESIGN PRINCIPLES
 
-1. **State is the single source of truth** — every node reads/writes only the shared state
-2. **Reducers prevent data loss** — `errors` field appends, never overwrites
-3. **Max retries per node** — prevents infinite loops, each agent fails independently
-4. **Checkpoint per superstep** — every node completion = saved state in Postgres
-5. **Graceful degradation** — SERP API failure falls back to mock, never crashes pipeline
-6. **Idempotent nodes** — resuming from checkpoint never duplicates work
-7. **Separation of concerns** — each node owns exactly one responsibility
-8. **QA revision cycle capped** — max 3 revisions, then publish best-effort
+```
+1. STATE IS THE SINGLE SOURCE OF TRUTH
+   Every node reads from and writes to ArticleGenerationState only.
+   No global variables, no side-channel communication.
+
+2. APPEND-ONLY ERROR REDUCER
+   errors: Annotated[List[str], operator.add]
+   Any node can log failures without erasing previous errors.
+
+3. INDEPENDENT PER-NODE RETRY BUDGETS
+   retry_counts["research/outline/writer/qa"] — each agent
+   fails independently; one retry doesn't penalise another.
+
+4. QA REVISION LOOP WITH A HARD CEILING
+   max_revisions = 3. After that, publish best-effort.
+   Prevents infinite writer↔qa cycles.
+
+5. PYDANTIC VALIDATORS AS SAFETY NETS
+   SeoMetadata auto-truncates over-length strings.
+   QAResult score is range-clamped. No crashes on LLM drift.
+
+6. WRITER IS SEQUENTIAL, NOT ReAct
+   article_writer → linking_tool → metadata_generator in order.
+   Deterministic section-by-section generation; agent loop adds
+   no value here and risks non-determinism.
+
+7. SSE + asyncio.to_thread FOR NON-BLOCKING OBSERVABILITY
+   Graph runs in a thread pool. Event loop stays free.
+   Connected browsers see live logs while pipeline runs.
+
+8. TWO DB LAYERS, ONE DATABASE
+   SQLAlchemy ORM owns job/article records.
+   PostgresSaver owns checkpoint blobs.
+   Same Postgres instance, cleanly separated schemas.
+```
