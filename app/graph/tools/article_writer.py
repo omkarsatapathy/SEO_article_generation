@@ -11,6 +11,12 @@ from config.config import cfg
 logger = logging.getLogger(__name__)
 
 
+def _normalize_level(raw_level: str) -> str:
+    """Normalize level values like '1','2','3' to 'H1','H2','H3'."""
+    mapping = {"1": "H1", "2": "H2", "3": "H3"}
+    return mapping.get(str(raw_level).strip(), str(raw_level).strip().upper())
+
+
 def _group_h2_blocks(
     sections: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any] | None, List[Dict[str, Any]]]:
@@ -23,7 +29,7 @@ def _group_h2_blocks(
     current_block: Dict[str, Any] | None = None
 
     for s in sections:
-        level = s.get("level", "")
+        level = _normalize_level(s.get("level", ""))
         if level == "H1":
             h1 = s
         elif level == "H2":
@@ -47,6 +53,26 @@ def _llm_text(llm, prompt: str) -> str:
 
 def _word_count(text: str) -> int:
     return len(text.split())
+
+
+def _cap_at_sentence(text: str, max_words: int) -> str:
+    """Truncate text at the last complete sentence before *max_words*."""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    truncated = " ".join(words[:max_words])
+    # Find the last sentence-ending punctuation
+    best = -1
+    for marker in (". ", ".\n", ".\r", "? ", "?\n", "! ", "!\n"):
+        pos = truncated.rfind(marker)
+        if pos > best:
+            best = pos
+    # Also check if the truncated text ends with a period
+    if truncated.rstrip().endswith("."):
+        return truncated.rstrip()
+    if best > len(truncated) // 3:  # don't cut more than 2/3
+        return truncated[: best + 1]
+    return truncated
 
 
 def _generate_intro(
@@ -157,20 +183,44 @@ def _generate_section(
         if _word_count(expanded) > _word_count(content):
             content = expanded
 
+    # ── Hard cap: truncate at last sentence if over max_words ────────────
+    if _word_count(content) > max_words:
+        logger.info(
+            "   ✂️  Section '%s' over-long: %d/%d words. Trimming…",
+            h2_heading, _word_count(content), max_words,
+        )
+        content = _cap_at_sentence(content, max_words)
+
     return content
 
 
-def _generate_faq(llm, faq_questions: List[str], primary_kw: str, language: str) -> str:
+def _generate_faq(
+    llm,
+    faq_questions: List[str],
+    primary_kw: str,
+    language: str,
+    max_total_words: int | None = None,
+) -> str:
     """Generate the FAQ section with all questions answered."""
     hp = cfg.hyperparams.writing
     q_list = "\n".join(f"- {q}" for q in faq_questions)
+    faq_max_words = getattr(hp, 'faq_answer_max_words', 50)
+    faq_total_max = max_total_words or (len(faq_questions) * faq_max_words)
     prompt = cfg.prompts.tools.faq.format(
         language=language,
         q_list=q_list,
         primary_kw=primary_kw,
-        faq_min_words=hp.faq_answer_min_words,
+        faq_min_words=min(hp.faq_answer_min_words, faq_max_words),
+        faq_max_words=faq_max_words,
+        faq_total_max=faq_total_max,
+        num_questions=len(faq_questions),
     )
-    return _llm_text(llm, prompt)
+    result = _llm_text(llm, prompt)
+    # Hard cap FAQ output to prevent word-count explosion
+    if max_total_words and _word_count(result) > max_total_words:
+        logger.info("   ✂️  FAQ over budget (%d/%d words). Trimming…", _word_count(result), max_total_words)
+        result = _cap_at_sentence(result, max_total_words)
+    return result
 
 
 def _generate_conclusion(llm, h1_heading: str, primary_kw: str, language: str) -> str:
@@ -248,11 +298,31 @@ def article_writer_tool(
     cumulative = _word_count(intro)
     logger.info("   📝 Intro: %d words (cumulative: %d/%d)", _word_count(intro), cumulative, target_word_count)
 
+    # ── 1b. Reserve budget for FAQ + conclusion ─────────────────────────
+    # Cap FAQ reservation proportionally — never let it starve H2 body content
+    faq_reserve = 0
+    faq_questions_to_use: List[str] = []
+    if faq_questions and not has_faq_section:
+        faq_max_budget = int(target_word_count * getattr(hp_w, 'faq_max_budget_pct', 0.15))
+        faq_answer_max = getattr(hp_w, 'faq_answer_max_words', 50)
+        max_faqs_by_budget = max(3, faq_max_budget // max(faq_answer_max, 1))
+        max_faqs_cap = getattr(hp_w, 'faq_max_questions', 5)
+        num_faqs = min(len(faq_questions), max_faqs_by_budget, max_faqs_cap)
+        faq_questions_to_use = faq_questions[:num_faqs]
+        faq_reserve = min(faq_max_budget, num_faqs * faq_answer_max)
+    conclusion_reserve = 0 if has_conclusion_section else min(hp_w.conclusion_word_max, int(target_word_count * 0.10))
+    total_reserved = faq_reserve + conclusion_reserve
+    h2_budget = max_total - cumulative - total_reserved
+    logger.info(
+        "   📊 Budget: %d total, %d intro, %d reserved (FAQ=%d + conclusion=%d), %d for H2s",
+        max_total, cumulative, total_reserved, faq_reserve, conclusion_reserve, h2_budget,
+    )
+
     # ── 2. Each H2 section ───────────────────────────────────────────────
     for block in h2_blocks:
-        remaining = max_total - cumulative
+        remaining = h2_budget - (cumulative - _word_count(intro))
         if remaining <= 50:
-            logger.warning("   ⚠️  Word budget exhausted (%d/%d). Skipping remaining sections.", cumulative, max_total)
+            logger.warning("   ⚠️  H2 budget exhausted (%d used of %d). Skipping remaining H2s.", cumulative, max_total)
             break
         article_so_far = "\n\n".join(parts)
         section = _generate_section(
@@ -270,10 +340,11 @@ def article_writer_tool(
         )
 
     # ── 3. FAQ (only if not already an outline H2) ───────────────────────
-    if faq_questions and not has_faq_section:
+    if faq_questions_to_use and not has_faq_section:
         remaining = max_total - cumulative
         if remaining > hp_w.faq_remaining_budget_min:
-            faq = _generate_faq(llm, faq_questions, primary_kw, language)
+            faq_word_budget = max(remaining - conclusion_reserve, faq_reserve)
+            faq = _generate_faq(llm, faq_questions_to_use, primary_kw, language, max_total_words=faq_word_budget)
             parts.append(faq)
             cumulative += _word_count(faq)
             logger.info("   📝 FAQ: %d words (cumulative: %d/%d)", _word_count(faq), cumulative, target_word_count)

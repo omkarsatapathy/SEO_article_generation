@@ -22,8 +22,8 @@ database:
   default_url: "postgresql://user:pass@localhost:5432/seo_agent"
 
 llm:
-  model: "gpt-5-mini"
-  writer_model: "gpt-4.1"
+  model: "gpt-4.1"
+  writer_model: "gpt-5.1"
   temperature: 0.7
   writer_temperature: 0.4
   writer_max_tokens: 16000

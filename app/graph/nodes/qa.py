@@ -116,45 +116,21 @@ def qa_node(state: ArticleGenerationState) -> dict:
     logger.info("🔎 QA NODE — Starting (revision #%d)", state.get("revision_count", 0))
 
     try:
-        agent = _build_qa_agent()
-
         article = state.get("article_draft") or ""
         metadata = state.get("seo_metadata")
         keywords = state.get("extracted_keywords") or []
         word_count = state.get("word_count") or 1500
 
-        user_message = (
-            f"Use seo_validator_tool to score the article. Article: {article}. "
-            f"metadata_json: {json.dumps(metadata.model_dump() if metadata else {})}. "
-            f"keywords_json: {json.dumps([k.model_dump() for k in keywords])}. "
-            f"target_word_count: {word_count}. "
-            "Return only JSON with qa_result: score, passed, issues, suggestions."
+        # Use direct seo_validator_tool — faster and more reliable than ReAct agent
+        result_json: str = seo_validator_tool.invoke(
+            {
+                "article": article,
+                "metadata_json": json.dumps(metadata.model_dump() if metadata else {}),
+                "keywords_json": json.dumps([k.model_dump() for k in keywords]),
+                "target_word_count": word_count,
+            }
         )
-
-        try:
-            agent_result = agent.invoke(
-                {"messages": [("user", user_message)]},
-                config={"recursion_limit": _get_max_iterations()},
-            )
-
-            payload = _extract_agent_payload(agent_result)
-            raw_result = payload.get("qa_result") or payload
-
-            if isinstance(raw_result, dict) and not raw_result.get("score"):
-                raw_result = payload
-
-            result = _coerce_qa_result(raw_result)
-        except Exception as agent_exc:
-            logger.warning("   ⚠️  QA agent failed (%s). Using direct validator fallback.", agent_exc)
-            result_json: str = seo_validator_tool.invoke(
-                {
-                    "article": article,
-                    "metadata_json": json.dumps(metadata.model_dump() if metadata else {}),
-                    "keywords_json": json.dumps([k.model_dump() for k in keywords]),
-                    "target_word_count": word_count,
-                }
-            )
-            result = QAResult.model_validate_json(result_json)
+        result = QAResult.model_validate_json(result_json)
 
         logger.info(
             "   📈 SEO Score: %d / 100  (pass threshold: %d)",

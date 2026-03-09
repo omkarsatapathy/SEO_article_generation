@@ -114,12 +114,24 @@ def _coerce_outline(payload: Dict[str, Any]) -> OutlineOutput:
     return OutlineOutput.model_validate({"sections": sections})
 
 
+def _normalize_level(raw_level: str) -> str:
+    """Normalize level values like '1','2','3' to 'H1','H2','H3'."""
+    mapping = {"1": "H1", "2": "H2", "3": "H3"}
+    return mapping.get(str(raw_level).strip(), str(raw_level).strip().upper())
+
+
 def _validate_and_fix_outline(
     sections: List[Any],
     target_word_count: int,
+    primary_keyword: str = "",
 ) -> List[Any]:
-    """Ensure outline word_targets are sane and sum to the target."""
+    """Ensure outline word_targets are sane, sum to the target, and H2s carry keywords."""
     hp = cfg.hyperparams.outline
+
+    # Normalize level values ("1"->"H1", "2"->"H2", "3"->"H3")
+    for s in sections:
+        s.level = _normalize_level(s.level)
+
     h2_sections = [s for s in sections if s.level == "H2"]
 
     if len(h2_sections) < hp.min_h2_sections:
@@ -146,6 +158,27 @@ def _validate_and_fix_outline(
             "   🔧 Redistributed %d words across %d H2s (was %d, now %d)",
             deficit, len(h2_sections), total_allocated, target_word_count,
         )
+
+    # ── Ensure ≥2 H2 headings contain the primary keyword ───────────────
+    if primary_keyword and h2_sections:
+        kw_lower = primary_keyword.lower()
+        # Also check individual words of the keyword phrase
+        kw_parts = [w for w in kw_lower.split() if len(w) > 3]
+        h2_with_kw = [
+            s for s in h2_sections
+            if kw_lower in s.heading.lower()
+            or any(part in s.heading.lower() for part in kw_parts)
+        ]
+        if len(h2_with_kw) < 2:
+            # Inject keyword into headings that lack it
+            injected = 0
+            for s in h2_sections:
+                if injected >= 2 - len(h2_with_kw):
+                    break
+                if s not in h2_with_kw:
+                    s.heading = f"{s.heading}: {primary_keyword.title()}"
+                    injected += 1
+                    logger.info("   🔑 Injected keyword into H2: '%s'", s.heading)
 
     return sections
 
@@ -194,8 +227,15 @@ def outline_node(state: ArticleGenerationState) -> dict:
         h2s = [s for s in output.sections if s.level == "H2"]
         h3s = [s for s in output.sections if s.level == "H3"]
 
+        # Determine primary keyword for H2 coverage check
+        extracted_keywords = state.get("extracted_keywords") or []
+        primary_kw = next(
+            (k.word for k in extracted_keywords if k.is_primary),
+            state.get("topic", ""),
+        )
+
         # Validate / fix word targets before passing to writer
-        output.sections = _validate_and_fix_outline(output.sections, word_count)
+        output.sections = _validate_and_fix_outline(output.sections, word_count, primary_keyword=primary_kw)
 
         logger.info("   ✅ Outline built: %d H1, %d H2, %d H3 sections", len(h1s), len(h2s), len(h3s))
         for s in output.sections:

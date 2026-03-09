@@ -53,8 +53,7 @@ agents:
     - The tool will return a JSON string containing the outline structure.
     - Extract this outline carefully.
     - Verify it contains:
-      * title (string)
-      * sections (array of objects, each with: title, level, keywords, word_target)
+      * sections (array of objects, each with: heading, level, keywords, word_target)
 
     ### STEP 3: Map Keywords (Optional Enhancement)
     - If the outline has missing or sparse keywords, call keyword_mapper_tool.
@@ -64,7 +63,7 @@ agents:
     ### STEP 4: Final Output
     - Combine results into a single JSON object with key "outline" containing the sections array.
     - Format: {{"outline": [section1, section2, ...]}}
-    - Each section MUST have: title (string), level (H1/H2/H3), keywords (array of strings), word_target (positive integer).
+    - Each section MUST have: heading (string), level ("H1"/"H2"/"H3" — uppercase string), keywords (array of strings), word_target (positive integer).
 
     ## VALIDATION CHECKLIST BEFORE RETURNING:
     ✓ outline key exists and contains a list
@@ -73,7 +72,7 @@ agents:
     ✓ Each H3 is a child of an H2
     ✓ All word_target values are positive integers
     ✓ All keywords are strings
-    ✓ No sections have empty titles
+    ✓ No sections have empty headings
     ✓ level is one of: H1, H2, or H3
 
     ## IF TOOL FAILS:
@@ -130,16 +129,16 @@ tools:
 
     3. KEYWORD ASSIGNMENT:
        - Assign the most relevant keywords to each section's keywords list.
-       - The H1 section should include the primary keyword.
+       - The H1 section MUST include the primary keyword in its heading text.
+       - At least 2 H2 headings MUST contain the primary keyword or its core terms (e.g. for "gold price forecast", headings like "Gold Price Forecast for 2026" or "Latest Gold Price Forecast Analysis").
        - Each H2/H3 section should have 1-3 relevant keywords.
        - Keywords MUST be from the provided keywords list.
 
     4. OUTPUT FORMAT:
-       - title (string): The H1 heading text - MUST be a string
        - sections (list): An ordered list of section objects
        - Each section object MUST include:
-         - title: Section heading text (string)
-         - level: Heading level (1, 2, or 3) - integer
+         - heading: Section heading text (string)
+         - level: One of "H1", "H2", or "H3" (string, uppercase)
          - keywords: List of relevant keywords (list of strings)
          - word_target: Target word count for this section (positive integer)
 
@@ -174,8 +173,8 @@ tools:
     {research_block}{qa_block}
     ## {h2_heading}
 
-    Word target for this section (including sub-sections): {total_target} words.
-    Acceptable range: {min_words}–{max_words} words. Do NOT exceed {max_words} words.
+    *** STRICT WORD LIMIT: {min_words}–{max_words} words. HARD MAXIMUM {max_words}. ***
+    Count your words carefully. 2 paragraphs of ~80 words each = ~160 words total.
     Section keywords: {h2_keywords}
 
     Sub-sections to include:{h3_block}
@@ -186,19 +185,19 @@ tools:
 
     RULES:
     - Start output with "## {h2_heading}" on its own line.
-    - Write {min_words}–{max_words} words. Stay within this range.
-    - Write 2–3 paragraphs per section, each 60–120 words. Develop points with examples and explanations.
-    - Use the primary keyword once naturally in this section. Use semantic variants elsewhere.
+    - Write EXACTLY {min_words}–{max_words} words. STOP writing once you approach {max_words} words.
+    - Write 2 paragraphs, each 60–100 words. Be concise and substantive.
+    - Use the primary keyword ONCE naturally. Use semantic variants elsewhere.
     - Include sub-section headings as ### if specified above; each H3 gets ≥ {h3_min_words} words.
     - Do NOT use bullet lists. Write flowing prose.
     - Do NOT include any preamble or meta-commentary. Output ONLY the section content in Markdown.
     - Do NOT leave sentences unfinished. Complete every paragraph fully.
-    - End with a smooth transition to the next section.
+    - STOP at {max_words} words. Do NOT write more.
 
     Previous content (for continuity):
     {prev_content}
 
-    Write the complete section now:
+    Write the complete section now (MAXIMUM {max_words} words):
 
   section_expand: |
     The section below is only {curr_word_count} words but needs at least {target} words.
@@ -219,12 +218,15 @@ tools:
 
     RULES:
     - Start with "## Frequently Asked Questions" on its own line.
-    - Each question becomes an ### heading followed by a thorough answer (≥ {faq_min_words} words).
+    - There are {num_questions} questions. Answer ALL of them.
+    - Each question becomes an ### heading followed by a CONCISE answer ({faq_min_words}–{faq_max_words} words per answer).
+    - *** STRICT TOTAL LIMIT: The ENTIRE FAQ section (heading + all Q&A) must be ≤ {faq_total_max} words. ***
+    - Be direct and concise. 2-3 sentences per answer is ideal.
     - Use the primary keyword naturally where relevant.
     - Write flowing prose. No bullet lists.
     - Output ONLY the FAQ section in Markdown.
 
-    Write the FAQ section now:
+    Write the FAQ section now (MAXIMUM {faq_total_max} words total):
 
   conclusion: |
     Write a conclusion for the SEO article "{h1_heading}" in {language}.

@@ -15,7 +15,7 @@ agent:
   orchestrator_max_iterations: 10
   research_max_iterations: 10
   outline_max_iterations: 10
-  qa_max_iterations: 3
+  qa_max_iterations: 8
 
 # ── QA validator ────────────────────────────────────────────
 qa:
@@ -80,6 +80,9 @@ writing:
   conclusion_word_min: 100
   conclusion_word_max: 150
   conclusion_remaining_budget_min: 50  # skip conclusion if budget below this
+  faq_max_budget_pct: 0.15        # FAQ section gets at most 15% of target word count
+  faq_answer_max_words: 50        # max words per FAQ answer
+  faq_max_questions: 5            # max FAQ questions regardless of article size
 
 # ── Outline builder ─────────────────────────────────────────
 outline:

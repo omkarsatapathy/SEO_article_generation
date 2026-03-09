@@ -871,7 +871,22 @@
 
   function detectStage(entry) {
     for (const { s, test } of DETECT) {
-      if (test(entry)) { activateStage(s); break; }
+      if (test(entry)) {
+        activateStage(s);
+        // When SSE detects pipeline completion, proactively load result
+        // This is a fallback in case polling misses the status change
+        if (s === 'output' && jobId && entry.text &&
+            /PIPELINE COMPLETE|Pipeline COMPLETE|🏁/.test(entry.text)) {
+          // Don't kill polling — let it handle completion reliably.
+          // Just attempt an eager load with a short timeout.
+          setTimeout(async () => {
+            try { await loadResult(jobId); } catch (_) {
+              // polling will handle it
+            }
+          }, 3000);
+        }
+        break;
+      }
     }
   }
 
@@ -962,10 +977,14 @@
   /* ── Polling ──────────────────────────────────────────────────────────── */
   function startPoll(id) {
     if (poll) clearInterval(poll);
+    let failCount = 0;
     poll = setInterval(async () => {
       try {
-        const r = await fetch(`${API}/jobs/${id}`);
-        if (!r.ok) return;
+        const r = await fetch(`${API}/jobs/${id}`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) { failCount++; return; }
+        failCount = 0;
         const d = await r.json();
 
         if (d.status === 'done') {
@@ -976,16 +995,31 @@
           alert('Job failed: ' + (d.error_message || 'Unknown error'));
           resetUI();
         }
-      } catch (_) {}
-    }, 2000);
+      } catch (err) {
+        failCount++;
+        if (failCount >= 30) {
+          clearInterval(poll); poll = null;
+          console.error('Polling failed repeatedly:', err);
+          alert('Lost connection to the API. Check the server and try again.');
+          resetUI();
+        }
+      }
+    }, 3000);
   }
 
   async function loadResult(id) {
     try {
-      const r = await fetch(`${API}/jobs/${id}/result`);
+      const r = await fetch(`${API}/jobs/${id}/result`, {
+        signal: AbortSignal.timeout(10000),
+      });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (poll) { clearInterval(poll); poll = null; }
       renderResult(await r.json());
     } catch (err) {
+      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+        console.warn('loadResult timed out, polling will retry');
+        return;  // let polling handle it
+      }
       alert('Failed to load result: ' + err.message);
       resetUI();
     }

@@ -60,8 +60,6 @@ def writer_node(state: ArticleGenerationState) -> dict:
     logger.info("="*60)
     logger.info("#"*60)
     logger.info("✍️  WRITER NODE — Starting (revision #%d)", revision)
-    print("State at this point:")
-    print(json.dumps(dict(state), indent=2, default=str))
 
     try:
         outline_json = json.dumps([s.model_dump() for s in (state.get("outline") or [])])
