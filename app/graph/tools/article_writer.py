@@ -1,0 +1,325 @@
+import json
+import logging
+import re
+from typing import Any, Dict, List, Tuple
+
+from langchain_core.tools import tool
+
+from app.graph.state import ArticleDraft
+
+logger = logging.getLogger(__name__)
+
+
+def _group_h2_blocks(
+    sections: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any] | None, List[Dict[str, Any]]]:
+    """Group outline sections into (H1, list of H2 blocks).
+
+    Each H2 block is ``{"h2": <section>, "h3s": [<section>, ...]}``.
+    """
+    h1 = None
+    blocks: List[Dict[str, Any]] = []
+    current_block: Dict[str, Any] | None = None
+
+    for s in sections:
+        level = s.get("level", "")
+        if level == "H1":
+            h1 = s
+        elif level == "H2":
+            if current_block:
+                blocks.append(current_block)
+            current_block = {"h2": s, "h3s": []}
+        elif level == "H3" and current_block is not None:
+            current_block["h3s"].append(s)
+
+    if current_block:
+        blocks.append(current_block)
+
+    return h1, blocks
+
+
+def _llm_text(llm, prompt: str) -> str:
+    """Invoke the LLM and return the text content."""
+    response = llm.invoke(prompt)
+    return (response.content if hasattr(response, "content") else str(response)).strip()
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def _generate_intro(
+    llm,
+    h1_heading: str,
+    primary_kw: str,
+    themes_json: str,
+    language: str,
+    qa_feedback: str,
+    research_context: str = "",
+) -> str:
+    """Generate the intro paragraph (120-150 words)."""
+    qa_block = f"\n⚠️ QA REVISION FEEDBACK — address these issues:\n{qa_feedback}\n" if qa_feedback else ""
+    research_block = f"\nResearch context (use for factual grounding):\n{research_context}\n" if research_context else ""
+    prompt = f"""Write an engaging introduction paragraph for an SEO article titled "# {h1_heading}" in {language}.
+
+Primary keyword: {primary_kw}
+Article themes: {themes_json}
+Target: 120–150 words.
+{research_block}{qa_block}
+RULES:
+- Hook the reader in the first sentence.
+- State the primary keyword "{primary_kw}" within the first two sentences.
+- Clearly state what the article covers.
+- Do NOT include the H1 heading — just the paragraph text.
+- Write flowing, natural prose. No bullet points.
+- Complete every sentence fully.
+
+Write the introduction now:"""
+    return _llm_text(llm, prompt)
+
+
+def _generate_section(
+    llm,
+    block: Dict[str, Any],
+    primary_kw: str,
+    keywords_json: str,
+    themes_json: str,
+    language: str,
+    article_so_far: str,
+    qa_feedback: str,
+    remaining_budget: int | None = None,
+    research_context: str = "",
+) -> str:
+    """Generate one H2 section (with child H3s) via raw LLM call, retry if short."""
+    h2 = block["h2"]
+    h3s = block["h3s"]
+
+    h2_heading = h2["heading"]
+    h2_word_target = h2.get("word_target", 250)
+    h2_keywords = h2.get("keywords", [])
+
+    h3_instructions = ""
+    total_target = h2_word_target
+    for h3 in h3s:
+        h3_target = h3.get("word_target", 100)
+        total_target += h3_target
+        h3_instructions += (
+            f"\n- ### {h3['heading']} ({h3_target} words) — keywords: {h3.get('keywords', [])}"
+        )
+
+    min_words = int(total_target * 0.85)
+    max_words = int(total_target * 1.20)
+    qa_block = f"\n⚠️ QA FEEDBACK for this revision — address ALL issues:\n{qa_feedback}\n" if qa_feedback else ""
+
+    # Budget awareness: if a remaining_budget is provided, cap so we don't overshoot
+    if remaining_budget is not None and remaining_budget < total_target:
+        total_target = max(remaining_budget, 100)
+        min_words = int(total_target * 0.85)
+        max_words = int(total_target * 1.15)
+
+    research_block = f"\nResearch context (use as factual grounding — cite insights naturally):\n{research_context}\n" if research_context else ""
+    prompt = f"""Write the following section of an SEO article in {language}.
+{research_block}{qa_block}
+## {h2_heading}
+
+Word target for this section (including sub-sections): {total_target} words.
+Acceptable range: {min_words}–{max_words} words. Do NOT exceed {max_words} words.
+Section keywords: {h2_keywords}
+
+Sub-sections to include:{h3_instructions if h3_instructions else " (none — write this as a single H2 section)"}
+
+Primary keyword: {primary_kw}
+All keywords: {keywords_json}
+Themes: {themes_json}
+
+RULES:
+- Start output with "## {h2_heading}" on its own line.
+- Write {min_words}–{max_words} words. Stay within this range.
+- Write 2–3 paragraphs per section, each 60–120 words. Develop points with examples and explanations.
+- Use the primary keyword once naturally in this section. Use semantic variants elsewhere.
+- Include sub-section headings as ### if specified above; each H3 gets ≥ 80 words.
+- Do NOT use bullet lists. Write flowing prose.
+- Do NOT include any preamble or meta-commentary. Output ONLY the section content in Markdown.
+- Do NOT leave sentences unfinished. Complete every paragraph fully.
+- End with a smooth transition to the next section.
+
+Previous content (for continuity):
+{article_so_far[-800:] if article_so_far else "(First section.)"}
+
+Write the complete section now:"""
+
+    content = _llm_text(llm, prompt)
+
+    # ── Per-section word-count gate: retry once if too short ──────────────
+    if _word_count(content) < min_words:
+        logger.warning(
+            "   ⚠️  Section '%s' too short: %d/%d words. Expanding…",
+            h2_heading, _word_count(content), total_target,
+        )
+        expand_prompt = f"""The section below is only {_word_count(content)} words but needs at least {total_target} words.
+REWRITE and EXPAND it to {total_target}+ words. Add more detail, data points, examples, and explanations.
+Keep the same heading structure and topic. Output ONLY the expanded Markdown section.
+
+{content}
+
+Expanded section:"""
+        expanded = _llm_text(llm, expand_prompt)
+        if _word_count(expanded) > _word_count(content):
+            content = expanded
+
+    return content
+
+
+def _generate_faq(llm, faq_questions: List[str], primary_kw: str, language: str) -> str:
+    """Generate the FAQ section with all questions answered."""
+    q_list = "\n".join(f"- {q}" for q in faq_questions)
+    prompt = f"""Write an FAQ section for an SEO article in {language}.
+
+Questions:
+{q_list}
+
+Primary keyword: {primary_kw}
+
+RULES:
+- Start with "## Frequently Asked Questions" on its own line.
+- Each question becomes an ### heading followed by a thorough answer (≥ 80 words).
+- Use the primary keyword naturally where relevant.
+- Write flowing prose. No bullet lists.
+- Output ONLY the FAQ section in Markdown.
+
+Write the FAQ section now:"""
+    return _llm_text(llm, prompt)
+
+
+def _generate_conclusion(llm, h1_heading: str, primary_kw: str, language: str) -> str:
+    """Generate the conclusion (100-150 words)."""
+    prompt = f"""Write a conclusion for the SEO article "{h1_heading}" in {language}.
+
+Primary keyword: {primary_kw}
+Target: 100–150 words.
+
+RULES:
+- Start with "## Conclusion" on its own line.
+- Summarise key takeaways from the article.
+- Include a clear call-to-action.
+- Use the primary keyword once naturally.
+- Write flowing prose. No bullet points.
+- Complete every sentence fully.
+
+Write the conclusion now:"""
+    return _llm_text(llm, prompt)
+
+
+@tool
+def article_writer_tool(
+    outline_json: str,
+    keywords_json: str,
+    themes_json: str,
+    language: str,
+    faq_questions_json: str,
+    target_word_count: int = 1500,
+    qa_feedback: str = "",
+    serp_results_json: str = "[]",
+    competitor_structures_json: str = "[]",
+) -> str:
+    """Write a complete SEO-optimised article section-by-section following the outline."""
+    from app.graph.tools import get_writer_llm
+
+    llm = get_writer_llm()
+    outline = json.loads(outline_json)
+    keywords = json.loads(keywords_json)
+    faq_questions = json.loads(faq_questions_json)
+
+    primary_kw = next((k["word"] for k in keywords if k.get("is_primary")), "")
+
+    h1, h2_blocks = _group_h2_blocks(outline)
+    h1_heading = h1["heading"] if h1 else "Article"
+    max_total = int(target_word_count * 1.15)  # hard ceiling
+
+    # Build a compact research context string from SERP snippets + competitor headings
+    serp_results = json.loads(serp_results_json)
+    competitor_structures = json.loads(competitor_structures_json)
+    research_snippets = "\n".join(
+        f"- [{r.get('title', '')}]: {r.get('snippet', '')}"
+        for r in serp_results[:5]
+        if r.get("snippet")
+    )
+    competitor_headings = "\n".join(
+        ", ".join(c.get("headings", [])[:4])
+        for c in competitor_structures[:3]
+        if c.get("headings")
+    )
+    research_context = ""
+    if research_snippets:
+        research_context += f"Research snippets (use as factual grounding):\n{research_snippets}\n"
+    if competitor_headings:
+        research_context += f"Competitor topic coverage examples:\n{competitor_headings}\n"
+
+    # Detect if outline already contains FAQ / Conclusion H2s
+    h2_headings_lower = [b["h2"]["heading"].lower() for b in h2_blocks]
+    has_faq_section = any("faq" in h or "frequently asked" in h for h in h2_headings_lower)
+    has_conclusion_section = any("conclusion" in h or "summary" in h or "final thoughts" in h for h in h2_headings_lower)
+
+    # ── 1. H1 + Intro ────────────────────────────────────────────────────
+    parts: List[str] = [f"# {h1_heading}"]
+    intro = _generate_intro(llm, h1_heading, primary_kw, themes_json, language, qa_feedback, research_context)
+    parts.append(intro)
+    cumulative = _word_count(intro)
+    logger.info("   📝 Intro: %d words (cumulative: %d/%d)", _word_count(intro), cumulative, target_word_count)
+
+    # ── 2. Each H2 section ───────────────────────────────────────────────
+    for block in h2_blocks:
+        remaining = max_total - cumulative
+        if remaining <= 50:
+            logger.warning("   ⚠️  Word budget exhausted (%d/%d). Skipping remaining sections.", cumulative, max_total)
+            break
+        article_so_far = "\n\n".join(parts)
+        section = _generate_section(
+            llm, block, primary_kw, keywords_json, themes_json,
+            language, article_so_far, qa_feedback,
+            remaining_budget=remaining,
+            research_context=research_context,
+        )
+        parts.append(section)
+        section_wc = _word_count(section)
+        cumulative += section_wc
+        logger.info(
+            "   📝 Section '%s': %d words (cumulative: %d/%d)",
+            block["h2"]["heading"], section_wc, cumulative, target_word_count,
+        )
+
+    # ── 3. FAQ (only if not already an outline H2) ───────────────────────
+    if faq_questions and not has_faq_section:
+        remaining = max_total - cumulative
+        if remaining > 100:
+            faq = _generate_faq(llm, faq_questions, primary_kw, language)
+            parts.append(faq)
+            cumulative += _word_count(faq)
+            logger.info("   📝 FAQ: %d words (cumulative: %d/%d)", _word_count(faq), cumulative, target_word_count)
+
+    # ── 4. Conclusion (only if not already an outline H2) ────────────────
+    if not has_conclusion_section:
+        remaining = max_total - cumulative
+        if remaining > 50:
+            conclusion = _generate_conclusion(llm, h1_heading, primary_kw, language)
+            parts.append(conclusion)
+            cumulative += _word_count(conclusion)
+            logger.info("   📝 Conclusion: %d words (cumulative: %d/%d)", _word_count(conclusion), cumulative, target_word_count)
+
+    # ── 5. Assemble & report ─────────────────────────────────────────────
+    full_article = "\n\n".join(parts)
+    total_words = _word_count(full_article)
+    sections_written = len(h2_blocks)
+
+    logger.info(
+        "   ✅ Article assembled: %d words across %d H2 sections (target: %d)",
+        total_words, sections_written, target_word_count,
+    )
+
+    draft = ArticleDraft(
+        content=full_article,
+        word_count=total_words,
+        sections_written=sections_written,
+    )
+    return draft.model_dump_json()
+

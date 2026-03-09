@@ -1,0 +1,1125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEO Article Generator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    /* ── Reset & Tokens ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #07090f;
+      --surface:     #0d1117;
+      --surface-2:   #131920;
+      --surface-3:   #1a2230;
+      --border:      #1e2a3a;
+      --border-2:    #253040;
+
+      --accent:      #5b7cf6;
+      --accent-dim:  rgba(91, 124, 246, 0.18);
+      --accent-glow: rgba(91, 124, 246, 0.35);
+      --teal:        #00c9a0;
+      --teal-dim:    rgba(0, 201, 160, 0.15);
+
+      --text:        #dde6f4;
+      --text-2:      #8b9ab5;
+      --text-3:      #445066;
+      --text-4:      #2a3548;
+
+      --term-bg:     #030508;
+      --t-green:     #3ddc84;
+      --t-blue:      #6ab0ff;
+      --t-amber:     #f0b429;
+      --t-red:       #ff5c5c;
+      --t-dim:       #2e3f55;
+
+      --ok:          #3ddc84;
+      --err:         #ff5c5c;
+
+      --r:           8px;
+      --ease:        200ms ease;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ── App Shell ──────────────────────────────────────────────────────── */
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 52px;
+      padding: 0 22px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .logo-mark {
+      width: 26px; height: 26px;
+      background: linear-gradient(135deg, var(--accent), var(--teal));
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .api-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-2);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 10px;
+    }
+
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--text-4);
+      transition: background var(--ease), box-shadow var(--ease);
+    }
+    .dot.on  { background: var(--ok);  box-shadow: 0 0 7px var(--ok); }
+    .dot.off { background: var(--err); }
+
+    /* ── Main split ─────────────────────────────────────────────────────── */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Left Panel ─────────────────────────────────────────────────────── */
+    .left {
+      width: 350px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    /* ── Form ───────────────────────────────────────────────────────────── */
+    .form-wrap {
+      padding: 18px 18px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .eyebrow {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: 13px;
+    }
+
+    .field { margin-bottom: 12px; }
+    .field:last-of-type { margin-bottom: 14px; }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-2);
+      margin-bottom: 5px;
+    }
+
+    textarea, select {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 13px;
+      padding: 7px 10px;
+      outline: none;
+      transition: border-color var(--ease), box-shadow var(--ease);
+    }
+
+    textarea {
+      resize: none;
+      min-height: 68px;
+      line-height: 1.55;
+    }
+
+    textarea:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+
+    select option { background: var(--surface-2); }
+
+    .range-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .range-val {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 3px;
+      accent-color: var(--accent);
+      cursor: pointer;
+      background: none;
+      border: none;
+      box-shadow: none;
+      padding: 0;
+      margin-top: 4px;
+    }
+    input[type="range"]:focus { box-shadow: none; border: none; }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      width: 100%;
+      padding: 9px 14px;
+      border: none;
+      border-radius: 7px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity var(--ease), transform var(--ease), box-shadow var(--ease);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, #7c5af5 100%);
+      color: #fff;
+      box-shadow: 0 2px 18px var(--accent-glow);
+      letter-spacing: 0.2px;
+    }
+    .btn-primary:hover:not(:disabled) {
+      opacity: .92;
+      box-shadow: 0 4px 28px var(--accent-glow);
+    }
+    .btn-primary:active:not(:disabled) { transform: translateY(1px); }
+    .btn-primary:disabled { opacity: .38; cursor: not-allowed; box-shadow: none; }
+
+    /* ── Pipeline Progress ──────────────────────────────────────────────── */
+    .pipeline {
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      display: none;
+    }
+    .pipeline.show { display: block; }
+
+    .stages {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: nowrap;
+    }
+
+    .stage {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-4);
+      white-space: nowrap;
+      transition: color var(--ease);
+    }
+    .stage-pip {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+    .stage.active { color: var(--accent); }
+    .stage.done   { color: var(--ok); }
+    .stage.active .stage-pip { animation: blink 1.1s ease-in-out infinite; }
+    .stage-sep { font-size: 9px; color: var(--text-4); }
+
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+    /* ── Terminal ───────────────────────────────────────────────────────── */
+    .term-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--term-bg);
+    }
+
+    .term-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 12px;
+      border-bottom: 1px solid #0b1220;
+      flex-shrink: 0;
+    }
+
+    .traffic {
+      display: flex;
+      gap: 5px;
+    }
+    .t-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .t-red    { background: #ff5f57; }
+    .t-yellow { background: #febc2e; }
+    .t-green  { background: #28c840; }
+
+    .term-title {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--t-dim);
+      letter-spacing: 0.5px;
+    }
+
+    .btn-clr {
+      font-size: 10px;
+      color: var(--t-dim);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: inherit;
+    }
+    .btn-clr:hover { background: var(--surface-3); color: var(--text-2); }
+
+    .term-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 12px 12px;
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+      font-size: 10.5px;
+      line-height: 1.75;
+      scrollbar-width: thin;
+      scrollbar-color: #182233 transparent;
+    }
+    .term-body::-webkit-scrollbar { width: 4px; }
+    .term-body::-webkit-scrollbar-thumb { background: #182233; border-radius: 2px; }
+
+    .term-empty {
+      color: var(--t-dim);
+      text-align: center;
+      padding: 24px 0;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+
+    .log-row {
+      display: flex;
+      gap: 7px;
+      padding: 0.5px 0;
+    }
+
+    .l-ts   { color: var(--t-dim); flex-shrink: 0; user-select: none; }
+    .l-lvl  { flex-shrink: 0; width: 38px; font-weight: 700; }
+    .l-lvl.INFO     { color: var(--t-blue); }
+    .l-lvl.WARNING  { color: var(--t-amber); }
+    .l-lvl.ERROR,
+    .l-lvl.CRITICAL { color: var(--t-red); }
+    .l-lvl.DEBUG    { color: var(--t-dim); }
+
+    .l-msg  { flex: 1; color: #607898; word-break: break-all; }
+    .l-msg.hi  { color: var(--t-green); }
+    .l-msg.err { color: var(--t-red); }
+    .l-msg.wrn { color: var(--t-amber); }
+
+    /* ── Right Panel ────────────────────────────────────────────────────── */
+    .right {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Article Topbar ─────────────────────────────────────────────────── */
+    .art-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 42px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+
+    .job-chip {
+      font-size: 12px;
+      color: var(--text-2);
+    }
+    .job-chip b { color: var(--text); font-weight: 500; }
+
+    .score-pill {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 11px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .score-pill.show { display: flex; }
+    .score-pill .snum { font-size: 14px; }
+
+    /* ── Right Body ─────────────────────────────────────────────────────── */
+    .art-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* ── Empty State ────────────────────────────────────────────────────── */
+    .empty {
+      position: absolute; inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .empty-glyph {
+      font-size: 36px;
+      opacity: .18;
+      line-height: 1;
+    }
+
+    .empty-h {
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--text-2);
+    }
+
+    .empty-s {
+      font-size: 12px;
+      color: var(--text-3);
+    }
+
+    /* ── Generating State ───────────────────────────────────────────────── */
+    .gen-state {
+      position: absolute; inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+    }
+    .gen-state.show { display: flex; }
+
+    .spinner {
+      width: 32px; height: 32px;
+      border: 2.5px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .gen-label { font-size: 14px; font-weight: 500; color: var(--text-2); }
+    .gen-sub { font-size: 11px; color: var(--text-3); }
+
+    /* ── Article Result ─────────────────────────────────────────────────── */
+    .art-result {
+      display: none;
+      flex: 1;
+      overflow: hidden;
+    }
+    .art-result.show { display: flex; }
+
+    /* Article text */
+    .art-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 36px 44px 40px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .art-scroll::-webkit-scrollbar { width: 5px; }
+    .art-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* Markdown typography */
+    .art-scroll h1 {
+      font-size: 24px; font-weight: 700; letter-spacing: -.4px;
+      color: var(--text); line-height: 1.3; margin-bottom: 6px;
+    }
+    .art-scroll h2 {
+      font-size: 17px; font-weight: 600; color: var(--text);
+      margin: 28px 0 9px; padding-bottom: 7px;
+      border-bottom: 1px solid var(--border);
+    }
+    .art-scroll h3 {
+      font-size: 14px; font-weight: 600; color: var(--text);
+      margin: 20px 0 7px;
+    }
+    .art-scroll p {
+      font-size: 13.5px; line-height: 1.85;
+      color: #9aafcc; margin-bottom: 13px;
+    }
+    .art-scroll ul, .art-scroll ol {
+      padding-left: 20px; color: #9aafcc;
+      margin-bottom: 13px; font-size: 13.5px;
+    }
+    .art-scroll li { margin-bottom: 4px; line-height: 1.75; }
+    .art-scroll strong { color: var(--text); font-weight: 600; }
+    .art-scroll em { color: var(--text-2); font-style: italic; }
+    .art-scroll code {
+      background: var(--surface-3); border: 1px solid var(--border);
+      border-radius: 3px; padding: 1px 5px;
+      font-family: 'SF Mono', monospace; font-size: 12px;
+      color: var(--teal);
+    }
+    .art-scroll pre {
+      background: var(--surface-2); border: 1px solid var(--border);
+      border-radius: var(--r); padding: 14px 16px;
+      overflow-x: auto; margin-bottom: 14px;
+    }
+    .art-scroll pre code {
+      background: none; border: none; padding: 0;
+      font-size: 12px;
+    }
+    .art-scroll blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 14px; margin-bottom: 13px;
+      color: var(--text-2);
+    }
+    .art-scroll a { color: var(--accent); }
+
+    /* ── SEO Sidebar ────────────────────────────────────────────────────── */
+    .seo-side {
+      width: 248px;
+      flex-shrink: 0;
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 18px 14px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    .seo-side::-webkit-scrollbar { width: 4px; }
+    .seo-side::-webkit-scrollbar-thumb { background: var(--border); }
+
+    .meta-block {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 11px 13px;
+      margin-bottom: 11px;
+    }
+
+    .meta-lbl {
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .9px;
+      text-transform: uppercase;
+      color: var(--text-3);
+      margin-bottom: 7px;
+    }
+
+    .meta-val {
+      font-size: 12px;
+      color: var(--text-2);
+      line-height: 1.5;
+    }
+
+    /* Score ring */
+    .score-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .score-svg { width: 52px; height: 52px; flex-shrink: 0; }
+    .s-track { fill: none; stroke: var(--surface-3); stroke-width: 4; }
+    .s-fill  {
+      fill: none;
+      stroke-width: 4;
+      stroke-linecap: round;
+      stroke-dasharray: 119.4;
+      stroke-dashoffset: 119.4;
+      transform: rotate(-90deg);
+      transform-origin: center;
+      transition: stroke-dashoffset 1.1s cubic-bezier(.4,0,.2,1);
+    }
+    .score-info { flex: 1; }
+    .score-num-big {
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .score-verdict {
+      font-size: 10px;
+      color: var(--text-3);
+      margin-top: 3px;
+    }
+
+    /* Word count */
+    .wc-big {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+    .wc-n { font-size: 22px; font-weight: 700; color: var(--teal); }
+    .wc-l { font-size: 11px; color: var(--text-3); }
+
+    /* Tags */
+    .tags { display: flex; flex-wrap: wrap; gap: 5px; }
+    .tag {
+      font-size: 10.5px;
+      border-radius: 4px;
+      padding: 2px 7px;
+      background: var(--surface-3);
+      border: 1px solid var(--border);
+      color: var(--text-2);
+    }
+    .tag.primary {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    /* Link rows */
+    .link-row {
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .link-row:last-child { border-bottom: none; }
+    .link-row .anchor {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 500;
+      display: block;
+    }
+    .link-row .target {
+      font-size: 10px;
+      color: var(--text-3);
+    }
+  </style>
+</head>
+
+<body>
+<div class="app">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header>
+    <div class="logo">
+      <div class="logo-mark">✦</div>
+      SEO Article Generator
+    </div>
+    <div class="api-pill">
+      <div class="dot" id="apiDot"></div>
+      <span id="apiTxt">Connecting…</span>
+    </div>
+  </header>
+
+  <div class="main">
+
+    <!-- ── Left Panel ──────────────────────────────────────────────────── -->
+    <aside class="left">
+
+      <!-- Form -->
+      <div class="form-wrap">
+        <div class="eyebrow">New Article</div>
+
+        <div class="field">
+          <label for="topic">Topic</label>
+          <textarea id="topic" rows="3"
+            placeholder="e.g. Best practices for async Python programming"></textarea>
+        </div>
+
+        <div class="field">
+          <div class="range-label">
+            <label for="wc">Word Count</label>
+            <span class="range-val" id="wcVal">1,500</span>
+          </div>
+          <input type="range" id="wc" min="500" max="5000" step="100" value="1500" />
+        </div>
+
+        <div class="field">
+          <label for="lang">Language</label>
+          <select id="lang">
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="pt">Portuguese</option>
+            <option value="it">Italian</option>
+            <option value="nl">Dutch</option>
+            <option value="ja">Japanese</option>
+            <option value="zh">Chinese</option>
+          </select>
+        </div>
+
+        <button class="btn btn-primary" id="btnGen" onclick="generate()">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+            <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round"/>
+          </svg>
+          Generate Article
+        </button>
+      </div>
+
+      <!-- Pipeline stages -->
+      <div class="pipeline" id="pipeline">
+        <div class="stages">
+          <div class="stage" data-s="research">
+            <div class="stage-pip"></div>Research</div>
+          <div class="stage-sep">›</div>
+          <div class="stage" data-s="outline">
+            <div class="stage-pip"></div>Outline</div>
+          <div class="stage-sep">›</div>
+          <div class="stage" data-s="writer">
+            <div class="stage-pip"></div>Write</div>
+          <div class="stage-sep">›</div>
+          <div class="stage" data-s="qa">
+            <div class="stage-pip"></div>QA</div>
+          <div class="stage-sep">›</div>
+          <div class="stage" data-s="output">
+            <div class="stage-pip"></div>Output</div>
+        </div>
+      </div>
+
+      <!-- Terminal -->
+      <div class="term-wrap">
+        <div class="term-bar">
+          <div class="traffic">
+            <div class="t-dot t-red"></div>
+            <div class="t-dot t-yellow"></div>
+            <div class="t-dot t-green"></div>
+          </div>
+          <span class="term-title">backend — live logs</span>
+          <button class="btn-clr" onclick="clearTerm()">clear</button>
+        </div>
+        <div class="term-body" id="termBody">
+          <div class="term-empty" id="termEmpty">— awaiting logs —</div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- ── Right Panel ─────────────────────────────────────────────────── -->
+    <section class="right">
+
+      <!-- Article topbar -->
+      <div class="art-bar">
+        <div class="job-chip" id="jobChip">No active job</div>
+        <div class="score-pill" id="scorePill">
+          SEO&nbsp;<span class="snum" id="scorePillNum">—</span>
+        </div>
+      </div>
+
+      <!-- Body -->
+      <div class="art-body">
+
+        <!-- Empty -->
+        <div class="empty" id="stEmpty">
+          <div class="empty-glyph">✦</div>
+          <div class="empty-h">No Article Yet</div>
+          <div class="empty-s">Enter a topic and click Generate</div>
+        </div>
+
+        <!-- Generating -->
+        <div class="gen-state" id="stGen">
+          <div class="spinner"></div>
+          <div class="gen-label">Generating Article…</div>
+          <div class="gen-sub" id="genSub">Starting pipeline</div>
+        </div>
+
+        <!-- Result -->
+        <div class="art-result" id="stResult">
+          <div class="art-scroll" id="artContent"></div>
+          <div class="seo-side" id="seoSide"></div>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<!-- ── Script ───────────────────────────────────────────────────────────────── -->
+<script>
+  /* ── Config ──────────────────────────────────────────────────────────── */
+  const API = 'http://localhost:8000';
+
+  /* ── State ───────────────────────────────────────────────────────────── */
+  let jobId     = null;
+  let poll      = null;
+  let sse       = null;
+
+  /* ── Helpers: escape HTML safely ─────────────────────────────────────── */
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  /* ── API Health ───────────────────────────────────────────────────────── */
+  async function ping() {
+    const dot = document.getElementById('apiDot');
+    const txt = document.getElementById('apiTxt');
+    try {
+      const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(3500) });
+      if (r.ok) {
+        dot.className = 'dot on';
+        txt.textContent = 'API online';
+        return true;
+      }
+    } catch (_) {}
+    dot.className = 'dot off';
+    txt.textContent = 'API offline';
+    return false;
+  }
+
+  /* ── Terminal ─────────────────────────────────────────────────────────── */
+  function appendLog(entry) {
+    const body  = document.getElementById('termBody');
+    const empty = document.getElementById('termEmpty');
+    if (empty) empty.remove();
+
+    const text  = entry.text  || '';
+    const level = entry.level || 'INFO';
+    const name  = entry.name  || '';
+
+    // Parse timestamp from formatted string: "HH:MM:SS │ ..."
+    const tsParts = text.split(' │ ');
+    const ts  = tsParts[0] || '';
+    const msg = tsParts.length >= 4 ? tsParts.slice(3).join(' │ ') : text;
+
+    // Classify message for colour
+    let cls = '';
+    if (level === 'ERROR' || level === 'CRITICAL') cls = 'err';
+    else if (level === 'WARNING')                  cls = 'wrn';
+    else if (msg.includes('▶▶▶') || msg.includes('COMPLETE') ||
+             msg.includes('Pipeline'))             cls = 'hi';
+
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    row.innerHTML =
+      `<span class="l-ts">${esc(ts)}</span>` +
+      `<span class="l-lvl ${level}">${level.slice(0,4)}</span>` +
+      `<span class="l-msg ${cls}">${esc(msg)}</span>`;
+
+    body.appendChild(row);
+    body.scrollTop = body.scrollHeight;
+
+    // Trim to 600 rows
+    while (body.children.length > 600) body.removeChild(body.firstChild);
+
+    // Detect pipeline stage from logger name or message text
+    detectStage(entry);
+  }
+
+  function clearTerm() {
+    document.getElementById('termBody').innerHTML =
+      '<div class="term-empty" id="termEmpty">— cleared —</div>';
+  }
+
+  /* ── Stage detection ──────────────────────────────────────────────────── */
+  const ORDER = ['research','outline','writer','qa','output'];
+
+  const DETECT = [
+    { s: 'research', test: e => /research|serp|theme_extractor/i.test(e.name + e.text) },
+    { s: 'outline',  test: e => /outline/i.test(e.name + e.text) },
+    { s: 'writer',   test: e => /writer|article_writer/i.test(e.name + e.text) },
+    { s: 'qa',       test: e => /\bqa\b|seo_validator/i.test(e.name + e.text) },
+    { s: 'output',   test: e => /output_builder|COMPLETE/i.test(e.name + e.text) },
+  ];
+
+  function detectStage(entry) {
+    for (const { s, test } of DETECT) {
+      if (test(entry)) { activateStage(s); break; }
+    }
+  }
+
+  function activateStage(name, done = false) {
+    const idx = ORDER.indexOf(name);
+    ORDER.forEach((s, i) => {
+      const el = document.querySelector(`[data-s="${s}"]`);
+      if (!el) return;
+      el.classList.remove('active','done');
+      if (i < idx)         el.classList.add('done');
+      else if (i === idx)  el.classList.add(done ? 'done' : 'active');
+    });
+    document.getElementById('genSub').textContent =
+      name.charAt(0).toUpperCase() + name.slice(1) + ' phase…';
+  }
+
+  function resetStages() {
+    ORDER.forEach(s => {
+      const el = document.querySelector(`[data-s="${s}"]`);
+      if (el) el.classList.remove('active','done');
+    });
+    document.getElementById('genSub').textContent = 'Starting pipeline…';
+  }
+
+  /* ── SSE connection ────────────────────────────────────────────────────── */
+  function connectSSE() {
+    if (sse) sse.close();
+    sse = new EventSource(`${API}/logs/stream`);
+    sse.onmessage = e => {
+      try { appendLog(JSON.parse(e.data)); } catch (_) {}
+    };
+    sse.onerror = () => setTimeout(connectSSE, 3000);
+  }
+
+  /* ── State display ────────────────────────────────────────────────────── */
+  function show(state) {
+    document.getElementById('stEmpty' ).style.display = state === 'empty'  ? '' : 'none';
+    document.getElementById('stGen'   ).style.display = state === 'gen'    ? 'flex' : 'none';
+    document.getElementById('stResult').style.display = state === 'result' ? 'flex' : 'none';
+  }
+
+  /* ── Generate ─────────────────────────────────────────────────────────── */
+  async function generate() {
+    const topic = document.getElementById('topic').value.trim();
+    if (!topic) { alert('Please enter a topic.'); return; }
+
+    const wc   = parseInt(document.getElementById('wc').value);
+    const lang = document.getElementById('lang').value;
+
+    const online = await ping();
+    if (!online) {
+      alert(`Cannot reach the API at ${API}.\nMake sure the server is running.`);
+      return;
+    }
+
+    document.getElementById('btnGen').disabled = true;
+    document.getElementById('pipeline').classList.add('show');
+    document.getElementById('scorePill').classList.remove('show');
+    document.getElementById('jobChip').innerHTML = 'Creating job…';
+    resetStages();
+    show('gen');
+
+    try {
+      const res = await fetch(`${API}/jobs/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic, word_count: wc, language: lang }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      jobId = data.job_id;
+
+      document.getElementById('jobChip').innerHTML =
+        `Job <b>#${jobId.slice(0,8)}</b> — <b>${esc(topic)}</b>`;
+
+      startPoll(jobId);
+    } catch (err) {
+      alert('Error: ' + err.message);
+      resetUI();
+    }
+  }
+
+  /* ── Polling ──────────────────────────────────────────────────────────── */
+  function startPoll(id) {
+    if (poll) clearInterval(poll);
+    poll = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/jobs/${id}`);
+        if (!r.ok) return;
+        const d = await r.json();
+
+        if (d.status === 'done') {
+          clearInterval(poll); poll = null;
+          await loadResult(id);
+        } else if (d.status === 'failed') {
+          clearInterval(poll); poll = null;
+          alert('Job failed: ' + (d.error_message || 'Unknown error'));
+          resetUI();
+        }
+      } catch (_) {}
+    }, 2000);
+  }
+
+  async function loadResult(id) {
+    try {
+      const r = await fetch(`${API}/jobs/${id}/result`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      renderResult(await r.json());
+    } catch (err) {
+      alert('Failed to load result: ' + err.message);
+      resetUI();
+    }
+  }
+
+  /* ── Render result ────────────────────────────────────────────────────── */
+  function renderResult(data) {
+    /* Article markdown → HTML */
+    document.getElementById('artContent').innerHTML =
+      marked.parse(data.article || '*No content returned.*');
+
+    /* SEO Score */
+    const score   = data.seo_score || 0;
+    const scoreOk = score >= 80;
+    const scoreWarn = score >= 60;
+    const scoreColor = scoreOk ? 'var(--ok)' : scoreWarn ? 'var(--t-amber)' : 'var(--t-red)';
+    const verdict = scoreOk ? '✓ Passed QA' : scoreWarn ? 'Needs review' : '✗ Below threshold';
+
+    /* Circumference for r=19: 2π×19 ≈ 119.4 */
+    const offset = 119.4 * (1 - score / 100);
+
+    const meta   = data.seo_metadata || {};
+    const kws    = data.keywords || [];
+    const primKw = meta.primary_keyword || '';
+    const secKws = (meta.secondary_keywords || []);
+    const links  = data.internal_links || [];
+
+    /* Build keyword tag list */
+    const tagItems = [
+      primKw && `<span class="tag primary">${esc(primKw)}</span>`,
+      ...secKws.map(k => `<span class="tag">${esc(k)}</span>`),
+      ...kws
+        .filter(k => !k.is_primary && !secKws.includes(k.word))
+        .slice(0, 6)
+        .map(k => `<span class="tag">${esc(k.word)}</span>`),
+    ].filter(Boolean).join('');
+
+    /* Build internal link rows */
+    const linkHTML = links.slice(0, 6).map(l =>
+      `<div class="link-row">
+         <span class="anchor">${esc(l.anchor_text || '—')}</span>
+         <span class="target">${esc(l.suggested_target_topic || '')}</span>
+       </div>`
+    ).join('');
+
+    document.getElementById('seoSide').innerHTML = `
+      <div class="eyebrow" style="margin-bottom:14px">SEO Metadata</div>
+
+      <div class="meta-block">
+        <div class="meta-lbl">SEO Score</div>
+        <div class="score-wrap">
+          <svg class="score-svg" viewBox="0 0 40 40">
+            <circle class="s-track" cx="20" cy="20" r="19"/>
+            <circle class="s-fill" id="sRing" cx="20" cy="20" r="19"
+              stroke="${scoreColor}"/>
+            <text x="20" y="24.5" text-anchor="middle"
+              font-family="-apple-system,sans-serif"
+              font-size="10.5" font-weight="700"
+              fill="${scoreColor}">${score}</text>
+          </svg>
+          <div class="score-info">
+            <div class="score-num-big" style="color:${scoreColor}">${score}</div>
+            <div class="score-verdict">${verdict}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="meta-block">
+        <div class="meta-lbl">Word Count</div>
+        <div class="wc-big">
+          <span class="wc-n">${(data.word_count_actual || 0).toLocaleString()}</span>
+          <span class="wc-l">words</span>
+        </div>
+      </div>
+
+      <div class="meta-block">
+        <div class="meta-lbl">Title Tag</div>
+        <div class="meta-val">${esc(meta.title_tag || '—')}</div>
+      </div>
+
+      <div class="meta-block">
+        <div class="meta-lbl">Meta Description</div>
+        <div class="meta-val">${esc(meta.meta_description || '—')}</div>
+      </div>
+
+      ${tagItems ? `
+      <div class="meta-block">
+        <div class="meta-lbl">Keywords</div>
+        <div class="tags">${tagItems}</div>
+      </div>` : ''}
+
+      ${linkHTML ? `
+      <div class="meta-block">
+        <div class="meta-lbl">Internal Links (${links.length})</div>
+        ${linkHTML}
+      </div>` : ''}
+    `;
+
+    /* Animate score ring after paint */
+    requestAnimationFrame(() => {
+      const ring = document.getElementById('sRing');
+      if (ring) ring.style.strokeDashoffset = offset;
+    });
+
+    /* Update top bar */
+    document.getElementById('scorePillNum').textContent = score;
+    document.getElementById('scorePillNum').style.color = scoreColor;
+    document.getElementById('scorePill').classList.add('show');
+
+    /* Show */
+    show('result');
+    activateStage('output', true);
+    document.getElementById('pipeline').classList.remove('show');
+    document.getElementById('btnGen').disabled = false;
+  }
+
+  function resetUI() {
+    show('empty');
+    document.getElementById('btnGen').disabled = false;
+    document.getElementById('pipeline').classList.remove('show');
+    document.getElementById('jobChip').innerHTML = 'No active job';
+  }
+
+  /* ── Word count slider label ─────────────────────────────────────────── */
+  document.getElementById('wc').addEventListener('input', function () {
+    document.getElementById('wcVal').textContent =
+      parseInt(this.value).toLocaleString();
+  });
+
+  /* ── Boot ────────────────────────────────────────────────────────────── */
+  show('empty');
+  ping();
+  setInterval(ping, 10000);
+  connectSSE();
+</script>
+</body>
+</html>

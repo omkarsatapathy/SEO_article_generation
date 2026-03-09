@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEO Article Generation — LangGraph Architecture</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; overflow: hidden; }
+  #canvas { width: 100vw; height: 100vh; position: relative; cursor: grab; }
+  #canvas.dragging { cursor: grabbing; }
+
+  /* ── Tooltip ─────────────────────────────────── */
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 9999;
+    max-width: 400px; padding: 14px 18px; border-radius: 10px;
+    background: #161b22ee; border: 1px solid #30363d;
+    box-shadow: 0 12px 40px rgba(0,0,0,.55);
+    font-size: 12px; line-height: 1.65; color: #c9d1d9;
+    opacity: 0; transition: opacity .12s ease;
+    backdrop-filter: blur(8px);
+    white-space: pre-wrap;
+  }
+  #tooltip.visible { opacity: 1; }
+  #tooltip .tt-title { font-weight: 700; font-size: 13.5px; margin-bottom: 5px; color: #e6edf3; white-space: normal; }
+  #tooltip .tt-tag { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 6px; margin-bottom: 8px; font-weight: 600; white-space: normal; }
+  #tooltip .tt-body { color: #b1bac4; }
+
+  /* ── SVG layer (arrows) ──────────────────────── */
+  svg.arrows {
+    position: absolute; inset: 0; pointer-events: none; z-index: 1;
+    overflow: visible;
+  }
+  svg.arrows path { stroke-width: 1.6; fill: none; }
+
+  /* ── Node boxes ──────────────────────────────── */
+  .node {
+    position: absolute; border-radius: 10px; text-align: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 2; cursor: default; transition: box-shadow .2s, transform .15s;
+    border: 1.5px solid transparent;
+    gap: 1px;
+  }
+  .node:hover { transform: translateY(-2px) scale(1.04); z-index: 10; }
+  .node .icon { font-size: 18px; line-height: 1; }
+  .node .label { font-size: 11px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+  .node .sub { font-size: 9px; opacity: .65; }
+
+  /* ── Pill-shaped start/end nodes ──────────────── */
+  .cat-entry, .cat-end { border-radius: 20px; }
+
+  /* ── Category colours ────────────────────────── */
+  .cat-entry   { background: linear-gradient(135deg,#1c2333,#1a2744); border-color: #388bfd; color: #79c0ff; }
+  .cat-entry:hover { box-shadow: 0 0 22px rgba(56,139,253,.4); }
+  .cat-node    { background: linear-gradient(135deg,#151e2e,#1a2844); border-color: #58a6ff; color: #a5d6ff; }
+  .cat-node:hover { box-shadow: 0 0 22px rgba(88,166,255,.35); }
+  .cat-tool    { background: linear-gradient(135deg,#141f14,#1a2e1a); border-color: #3fb950; color: #7ee787; }
+  .cat-tool:hover { box-shadow: 0 0 22px rgba(63,185,80,.35); }
+  .cat-llm     { background: linear-gradient(135deg,#231530,#2d1f44); border-color: #bc8cff; color: #d2a8ff; }
+  .cat-llm:hover { box-shadow: 0 0 22px rgba(188,140,255,.4); }
+  .cat-api     { background: linear-gradient(135deg,#221a0e,#2e2415); border-color: #d29922; color: #e3b341; }
+  .cat-api:hover { box-shadow: 0 0 22px rgba(210,153,34,.4); }
+  .cat-db      { background: linear-gradient(135deg,#14201e,#1a2e28); border-color: #39d353; color: #56d364; }
+  .cat-db:hover { box-shadow: 0 0 22px rgba(57,211,83,.35); }
+  .cat-state   { background: linear-gradient(135deg,#181c22,#21262d); border-color: #8b949e; color: #b1bac4; }
+  .cat-state:hover { box-shadow: 0 0 22px rgba(139,148,158,.35); }
+  .cat-error   { background: linear-gradient(135deg,#220e10,#2d1518); border-color: #f85149; color: #ffa198; }
+  .cat-error:hover { box-shadow: 0 0 22px rgba(248,81,73,.4); }
+  .cat-end     { background: linear-gradient(135deg,#1c2333,#1a2744); border-color: #58a6ff; color: #79c0ff; }
+  .cat-end:hover { box-shadow: 0 0 22px rgba(88,166,255,.35); }
+  .cat-valid   { background: linear-gradient(135deg,#141f14,#1e2e1e); border-color: #3fb950; color: #7ee787; }
+  .cat-valid:hover { box-shadow: 0 0 22px rgba(63,185,80,.35); }
+  .cat-score   { background: linear-gradient(135deg,#22152a,#2e1f38); border-color: #f778ba; color: #ff9ec3; }
+  .cat-score:hover { box-shadow: 0 0 22px rgba(247,120,186,.35); }
+
+  /* ── Legend ───────────────────────────────────── */
+  #legend {
+    position: fixed; bottom: 16px; left: 16px; z-index: 100;
+    background: #161b22ee; border: 1px solid #30363d; border-radius: 10px;
+    padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 12px;
+    font-size: 10.5px; box-shadow: 0 4px 16px rgba(0,0,0,.5);
+    backdrop-filter: blur(8px);
+  }
+  .leg-item { display: flex; align-items: center; gap: 5px; color: #8b949e; }
+  .leg-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  /* ── Title ───────────────────────────────────── */
+  #title-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: linear-gradient(180deg, #0d1117 55%, transparent);
+    padding: 14px 24px 32px; pointer-events: none;
+  }
+  #title-bar h1 { font-size: 15px; font-weight: 700; color: #e6edf3; }
+  #title-bar p  { font-size: 11px; color: #6e7681; margin-top: 2px; }
+
+  /* Zoom controls */
+  #zoom-ctrl {
+    position: fixed; bottom: 16px; right: 16px; z-index: 100;
+    display: flex; gap: 4px;
+  }
+  #zoom-ctrl button {
+    width: 30px; height: 30px; border-radius: 8px; border: 1px solid #30363d;
+    background: #161b22; color: #c9d1d9; font-size: 15px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s;
+  }
+  #zoom-ctrl button:hover { background: #21262d; }
+</style>
+</head>
+<body>
+
+<div id="title-bar">
+  <h1>SEO Article Generation — LangGraph Pipeline Architecture</h1>
+  <p>Hover any element for details &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Drag to pan</p>
+</div>
+
+<div id="tooltip"><div class="tt-title"></div><div class="tt-tag"></div><div class="tt-body"></div></div>
+
+<div id="canvas"></div>
+
+<div id="legend">
+  <div class="leg-item"><div class="leg-dot" style="background:#388bfd"></div>Entry / Exit</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#58a6ff"></div>Graph Node</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#3fb950"></div>Tool</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#bc8cff"></div>LLM (GPT-4o)</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#d29922"></div>External API</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#39d353"></div>Database</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#8b949e"></div>State</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#f85149"></div>Error / Retry</div>
+  <div class="leg-item"><div class="leg-dot" style="background:#f778ba"></div>Scoring</div>
+  <div class="leg-item" style="margin-left:8px;border-left:1px solid #30363d;padding-left:12px"><svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#58a6ff" stroke-width="1.5"/></svg> Flow</div>
+  <div class="leg-item"><svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#3fb950" stroke-width="1.5" stroke-dasharray="3,3"/></svg> Invokes</div>
+</div>
+
+<div id="zoom-ctrl">
+  <button id="zoomIn" title="Zoom in">+</button>
+  <button id="zoomOut" title="Zoom out">−</button>
+  <button id="zoomFit" title="Fit to view">⊡</button>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   LAYOUT — Five vertical lanes:
+     Lane 0 (x≈60):   External services (SerpAPI, DB)
+     Lane 1 (x≈220):  LLM + Checkpointer
+     Lane 2 (x≈390):  Tools (left of pipeline)
+     Lane 3 (x≈580):  Main pipeline (graph nodes)  ← vertical spine
+     Lane 4 (x≈800):  State / Error / Retry (right side)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const NODES = [
+  // ── Main pipeline spine (Lane 3) ──────────────────
+  { id:'start',        x:580, y:28,   w:90,  h:32, cat:'entry', icon:'▶', label:'START',
+    desc:'PURPOSE: The official entry point of the pipeline. Think of it as the green light that kicks everything off.\n\nHow it is triggered: When someone calls the API with a topic they want an article about, a background job is created. The moment that job hands control over to this pipeline, START fires — and the whole chain of agents begins running one after another.' },
+
+  { id:'orchestrator', x:555, y:100,  w:140, h:42, cat:'node',  icon:'🎯', label:'Orchestrator Node',
+    desc:'PURPOSE: The first agent that runs. It is the gatekeeper — it checks everything is in order before any real work begins. No AI or external calls happen here.\n\nINPUT: The user\'s topic, desired word count, and language.\n\nWHAT IT DOES: Checks the topic is not empty. Assigns a unique ID to this job. Sets a default word count (1500 words) and language (English) if the user did not specify. Resets all retry counters to zero. Marks the job as "researching" to signal what happens next.\n\nOUTPUT: An initialised job ready to be researched.' },
+
+  { id:'research',     x:555, y:200,  w:140, h:42, cat:'node',  icon:'🔍', label:'Research Node',
+    desc:'PURPOSE: Gather intelligence on the topic before writing anything. This is the "homework" stage.\n\nINPUT: The topic string passed from the Orchestrator.\n\nWHAT IT DOES: First, it calls the SERP Fetch tool to get the top 10 Google search results for that topic. Then it sends those results to the AI (GPT-4o) via the Theme Extractor tool, which reads all 10 results and figures out the common themes, important keywords, how competitors structure their articles, and common questions people ask.\n\nOUTPUT: A list of themes, keywords, competitor structures, and FAQ questions — all stored in the shared pipeline state.\n\nFAILURE: If anything goes wrong, it retries up to 3 times before giving up.' },
+
+  { id:'outline',      x:555, y:312,  w:140, h:42, cat:'node',  icon:'📝', label:'Outline Node',
+    desc:'PURPOSE: Plan the article\'s structure before a single word is written — like creating a table of contents.\n\nINPUT: The themes and keywords discovered during Research, plus the target word count.\n\nWHAT IT DOES: Sends all research insights to GPT-4o, which designs a full article blueprint. The outline contains: exactly 1 main heading (H1) with the primary keyword, 4–6 section headings (H2) covering each major theme, and 2–3 sub-headings (H3) under each section. Every heading gets a word target so the final article hits the right length.\n\nOUTPUT: A structured list of headings, each tagged with relevant keywords and a word count target.\n\nFAILURE: Retries up to 3 times if the AI call fails.' },
+
+  { id:'writer',       x:555, y:440,  w:140, h:42, cat:'node',  icon:'✍️', label:'Writer Node',
+    desc:'PURPOSE: The core creative engine — actually writes the full article and everything that goes with it.\n\nINPUT: The outline, keywords, themes, FAQs, and language. If this is a revision, it also receives a list of problems flagged by the QA step.\n\nWHAT IT DOES (3 steps): ① Calls the Article Writer tool — GPT-4o writes the full article in Markdown, following every heading and hitting the word targets. ② Calls the Metadata Generator — GPT-4o writes a Google-friendly page title (max 60 characters) and meta description (max 160 characters). ③ Calls the Linking tool — GPT-4o suggests 3–5 internal links and 2–4 external reference links to strengthen the article.\n\nOUTPUT: A complete draft article, SEO metadata, and link suggestions — all ready for quality checking.' },
+
+  { id:'qa',           x:555, y:580,  w:140, h:42, cat:'node',  icon:'🔎', label:'QA Node',
+    desc:'PURPOSE: A strict quality inspector that decides if the article is good enough to publish — or needs to go back for revision.\n\nINPUT: The article draft, the SEO metadata (title + description), and the keywords.\n\nWHAT IT DOES: Runs 10 automated SEO checks using pure code — no AI involved here. Checks things like: Is the main keyword in the title? Is the word count close to target? Are headings structured correctly? Is the keyword used at the right frequency? Each failed check deducts points from a score of 100.\n\nOUTPUT: A score out of 100, a pass/fail result, a list of specific problems found, and suggestions to fix them.\n\nDECISION: Score ≥ 80 → moves to Output. Score < 80 → sends back to Writer with the problem list (up to 3 revision attempts).' },
+
+  { id:'output',       x:555, y:700,  w:140, h:42, cat:'node',  icon:'📦', label:'Output Builder',
+    desc:'PURPOSE: The final packaging step — assembles everything into a clean, complete result before saving it.\n\nINPUT: The approved article, SEO metadata, internal links, external references, and the QA score from earlier steps.\n\nWHAT IT DOES: Takes the best version of the article available (the QA-approved one, or the best draft if the revision limit was reached). Counts the actual word count. Confirms all pieces are present: the article body, the title/meta description, and the link suggestions.\n\nOUTPUT: A fully packaged result with status marked as "done". This is handed to the END node, which triggers the database save. Nothing is changed or generated here — it is purely assembly and final confirmation.' },
+
+  { id:'end',          x:580, y:785,  w:90,  h:32, cat:'end',   icon:'⏹', label:'END',
+    desc:'PURPOSE: The official finish line of the pipeline. Once this is reached, the job is complete.\n\nWHAT HAPPENS HERE: The LangGraph pipeline stops running. Control returns to the FastAPI background task that originally started this pipeline. That task then saves everything — the final article, SEO metadata, keywords, links, score, and word count — into the PostgreSQL database so it can be retrieved later via the API. The job status in the database is updated to "done".' },
+
+  // ── Tools (Lane 2) ────────────────────────────────
+  { id:'serp_tool',    x:385, y:175,  w:110, h:32, cat:'tool',  icon:'🔧', label:'serp_fetch', sub:'@tool',
+    desc:'PURPOSE: Fetch real Google search results for the topic so the pipeline knows what is already ranking well.\n\nINPUT: The topic/keyword string (e.g. "how to make sourdough bread").\n\nWHAT IT DOES: Sends the topic to the SerpAPI service, which performs a live Google search. Gets back the top 10 organic results — the actual pages that rank on page 1 of Google right now.\n\nOUTPUT: A structured list of 10 results, each with its rank position, page title, URL, and a short snippet of text. If SerpAPI is unavailable (e.g. during testing), it falls back to realistic mock data so the pipeline can still run.' },
+
+  { id:'theme_tool',   x:385, y:228,  w:110, h:32, cat:'tool',  icon:'🔧', label:'theme_extractor', sub:'@tool + LLM',
+    desc:'PURPOSE: Read the top 10 Google results and figure out what topics, keywords, and questions matter most for this subject.\n\nINPUT: The 10 SERP results (titles, URLs, snippets) from the serp_fetch tool.\n\nWHAT IT DOES: Sends all 10 results to GPT-4o and asks it to act as an expert SEO analyst. The AI reads through everything and figures out: what the top 5 overarching themes are, which is the single most important keyword, 5–8 supporting keywords and how often they appear, how competitors structure their article headings, and 5–8 common questions readers want answered.\n\nOUTPUT: A rich research brief with themes, keywords (ranked by importance), competitor heading structures, and FAQs — all in a clean structured format.' },
+
+  { id:'outline_tool', x:385, y:312,  w:110, h:32, cat:'tool',  icon:'🔧', label:'outline_builder', sub:'@tool + LLM',
+    desc:'PURPOSE: Design the blueprint of the article — what headings to use, in what order, and how many words each section should have.\n\nINPUT: The list of themes, keywords, and the target total word count.\n\nWHAT IT DOES: Asks GPT-4o to act as an SEO content strategist and produce a complete article structure. The AI decides: one H1 (main title) that includes the primary keyword, 4–6 H2 section headings (one per major theme), and 2–3 H3 sub-headings under each H2. It distributes the total word count proportionally so longer sections get more words.\n\nOUTPUT: A structured outline — a list of every heading with its level (H1/H2/H3), relevant keywords to use in that section, and an exact word target.' },
+
+  { id:'article_tool', x:385, y:410,  w:110, h:32, cat:'tool',  icon:'🔧', label:'article_writer', sub:'@tool + LLM',
+    desc:'PURPOSE: Write the actual article content from start to finish.\n\nINPUT: The full outline (all headings + word targets), keywords, themes, FAQs, and the desired language.\n\nWHAT IT DOES: GPT-4o writes the complete article following the outline exactly. Rules it must follow: natural, human-sounding tone (not robotic), the primary keyword appears in the H1 title and in the first paragraph, the keyword is used at a healthy density of 1–2% throughout, every section meets its word target, headings use proper Markdown formatting, and the article ends with a FAQ section answering all the questions from research.\n\nOUTPUT: A full article in Markdown format, with the actual word count and number of sections recorded.' },
+
+  { id:'meta_tool',    x:385, y:455,  w:110, h:32, cat:'tool',  icon:'🔧', label:'metadata_gen', sub:'@tool + LLM',
+    desc:'PURPOSE: Write the short pieces of text that appear in Google search results — the page title and description snippet.\n\nINPUT: The first 3,000 characters of the article draft and the primary keyword.\n\nWHAT IT DOES: GPT-4o reads the article intro and writes two things: ① A page title ("title tag") — must be 60 characters or fewer, must include the primary keyword, and must be compelling enough to make someone click. ② A meta description — must be 160 characters or fewer, must include the keyword, and must end with a clear call-to-action.\n\nOUTPUT: A page title, a meta description, the primary keyword, and a list of 4–8 secondary keywords found naturally in the article. The character limits are enforced automatically.' },
+
+  { id:'link_tool',    x:385, y:498,  w:110, h:32, cat:'tool',  icon:'🔧', label:'linking_tool', sub:'@tool + LLM',
+    desc:'PURPOSE: Recommend links that should be added to the article — both links to other pages on the same website and links to reputable external sources.\n\nINPUT: The article outline and the list of themes.\n\nWHAT IT DOES: GPT-4o acts as an SEO link-building specialist. It suggests two types of links: ① Internal links (3–5) — the anchor text to use (the clickable words) and what topic on the same website it should point to. ② External links (2–4) — actual URLs of authoritative sources (like Wikipedia, government sites, or major publications) and a note on where in the article they should be placed.\n\nOUTPUT: A structured list of internal and external link recommendations, ready to be inserted into the article.' },
+
+  { id:'seo_valid',    x:385, y:568,  w:110, h:32, cat:'valid', icon:'✓', label:'seo_validator', sub:'Programmatic',
+    desc:'PURPOSE: Mechanically check the article against 10 concrete SEO rules. No AI here — this is a rule-based code checker for total consistency.\n\nINPUT: The article text, the SEO metadata (title + description), and the keywords.\n\nTHE 10 CHECKS: ① Keyword appears in the H1 title. ② Keyword appears in the opening 500 characters. ③ Keyword density is 0.5%–3% (not too rare, not stuffed). ④ At least 2 section headings (H2) contain a keyword. ⑤ Article word count is within ±15% of the target. ⑥ Page title is 60 characters or fewer. ⑦ Meta description is 160 characters or fewer. ⑧ Headings are in valid hierarchy (one H1, H3s only after H2s). ⑨ Keyword not overused (>3% = stuffing penalty). ⑩ Every H2 section has at least 100 words.\n\nOUTPUT: A score out of 100, a pass/fail flag, a list of issues, and suggestions to fix them.' },
+
+  { id:'scoring',      x:385, y:612,  w:110, h:32, cat:'score', icon:'📊', label:'SEO Score', sub:'0-100 pts',
+    desc:'PURPOSE: A numerical quality score that summarises how well the article meets SEO best practices.\n\nHOW IT WORKS: The article starts with a perfect score of 100. Points are deducted for each problem found:\n• −15 pts: Keyword missing from the H1 title\n• −15 pts: Keyword missing from the intro paragraph\n• −10 pts each: Bad keyword density / too few keyword headings / wrong word count / title too long / description too long / broken heading order / keyword stuffing\n• −5 pts: Any H2 section shorter than 100 words\n\nPASS THRESHOLD: 80 out of 100 (configurable). Score ≥ 80 → article is approved and moves forward. Score < 80 → article goes back to the Writer with a detailed list of exactly what to fix.' },
+
+  // ── LLM (Lane 1) ─────────────────────────────────
+  { id:'llm',          x:218, y:390,  w:108, h:42, cat:'llm',   icon:'🧠', label:'GPT-4o', sub:'OpenAI API',
+    desc:'PURPOSE: The AI brain of the entire pipeline. Every intelligent, creative task is handled by this model.\n\nWHAT IT IS: OpenAI\'s GPT-4o — a large language model that understands and generates human-quality text. Accessed via the OpenAI API using your OPENAI_API_KEY.\n\nHOW IT IS USED: Each tool gives GPT-4o a very specific, detailed prompt and asks it to respond in a strict structured format (so the output can be safely parsed by code). Temperature is set to 0.7 — a balance between creativity and consistency.\n\nCALLED BY: Theme Extractor, Outline Builder, Article Writer, Metadata Generator, and Linking Tool — 5 out of 6 tools use it.\n\nNOT USED BY: SEO Validator — that step is purely rule-based code, no AI involved.' },
+
+  // ── External APIs (Lane 0) ────────────────────────
+  { id:'serpapi',      x:60,  y:175,  w:108, h:32, cat:'api',   icon:'🌐', label:'SerpAPI', sub:'Google Search',
+    desc:'PURPOSE: A paid third-party service that performs a real Google search on behalf of the pipeline and returns the results in a clean, structured format.\n\nWHY IT IS NEEDED: Google does not allow direct automated scraping of its search results. SerpAPI is a legal, reliable service that handles this — it searches Google and hands back the data neatly.\n\nINPUT: The topic/keyword and your SERPAPI_KEY (an API access credential stored securely in settings).\n\nOUTPUT: The top 10 organic (non-ad) search results — each with its position, page title, URL, and a short text snippet from the page. This data becomes the foundation for all research and content decisions in the pipeline.' },
+
+  { id:'fastapi',      x:60,  y:50,   w:108, h:38, cat:'api',   icon:'⚡', label:'FastAPI API', sub:'REST + SSE',
+    desc:'PURPOSE: The front door of the entire system — the web API that clients (apps, dashboards, scripts) talk to.\n\nWHAT IT OFFERS: Three main endpoints:\n• POST /jobs/ — Submit a new topic to generate an article. Returns a job ID immediately.\n• GET /jobs/{id} — Check the current status of a job (pending, researching, writing, done, failed).\n• GET /jobs/{id}/result — Retrieve the finished article and all SEO outputs once done.\n\nCOOL FEATURE: A live log stream at GET /logs/stream sends real-time progress updates to connected clients using Server-Sent Events — so you can watch the pipeline work step by step.\n\nKEY BEHAVIOUR: Article generation runs in the background so the API responds instantly without making the caller wait minutes for the result.' },
+
+  // ── Database (Lane 0-1) ───────────────────────────
+  { id:'postgres',     x:60,  y:700,  w:108, h:40, cat:'db',    icon:'🗄️', label:'PostgreSQL', sub:'Async ORM',
+    desc:'PURPOSE: The permanent storage for everything this system produces and tracks. Think of it as the filing cabinet that keeps a record of every job and every finished article.\n\nROLE 1 — Job & Article Storage: Every time someone requests an article, a new job record is created in the "generation_jobs" table (storing the topic, status, score, timestamps). When the article is finished, the full content, metadata, keywords, and links are saved in the "generated_articles" table. These records can be fetched any time via the API.\n\nROLE 2 — Pipeline Safety Net: PostgreSQL also stores LangGraph checkpoint data — a snapshot of the pipeline state after every step. If the server crashes mid-generation, the pipeline can resume exactly from where it stopped instead of starting over from scratch.' },
+
+  { id:'checkpoint',   x:218, y:700,  w:108, h:38, cat:'db',    icon:'💾', label:'Checkpointer', sub:'PostgresSaver',
+    desc:'PURPOSE: A automatic save-game system for the pipeline. After every single step completes, the pipeline\'s entire state (every piece of data collected so far) is saved to the database.\n\nWHY THIS MATTERS: Article generation can take 1–3 minutes. If the server restarts or crashes halfway through — say, right after Research but before Writing — without the Checkpointer you would lose all that work and have to start over. With it, the pipeline can detect where it stopped and pick up from that exact point.\n\nHOW IT WORKS: Uses PostgresSaver (a LangGraph built-in) with a pool of up to 10 database connections. On first use, it automatically creates the three checkpoint tables it needs in PostgreSQL. Each saved snapshot is linked to the job\'s unique thread ID.' },
+
+  // ── State / Error (Lane 4) ────────────────────────
+  { id:'state',        x:790, y:100,  w:148, h:58, cat:'state', icon:'📋', label:'ArticleGenerationState', sub:'TypedDict — shared state',
+    desc:'PURPOSE: The shared memory of the entire pipeline. Every agent node reads from it and writes its results back to it. Think of it as a shared whiteboard that every step can both read and update.\n\nWHAT IT HOLDS:\n• Job info: ID, topic, word count, language, status, timestamps.\n• After Research: the 10 SERP results, themes, keywords, competitor structures, FAQs.\n• After Outline: the full structured list of headings and word targets.\n• After Writing: the article draft, metadata, links, revision count.\n• After QA: the score, pass/fail result, issues and suggestions.\n• After Output: the final approved article.\n• Always: a running list of errors (never overwritten — only appended) and per-node retry counters.\n\nThe state is also what gets saved to the database after each step for crash recovery.' },
+
+  { id:'retry',        x:800, y:290,  w:128, h:40, cat:'error', icon:'🔄', label:'Retry Logic', sub:'max 3 per node',
+    desc:'PURPOSE: An automatic safety net so that a temporary glitch (like a slow API or a momentary network error) does not kill the entire pipeline.\n\nHOW IT WORKS: If any node — Research, Outline, or Writer — throws an error, the pipeline does not stop. Instead it increments that node\'s personal retry counter and tries again. Each node gets 3 attempts total.\n\nDECISION LOGIC: After each attempt, the pipeline checks: Has this node failed 3 or more times? If yes → route to Error Handler (give up). If no → loop back and try the same node again.\n\nQA REVISIONS: The QA node has its own separate revision counter (not a failure retry, but a "needs improvement" counter). The article can be revised up to 3 times before it is published as-is.\n\nAll errors are recorded in the state\'s error list — nothing is silently swallowed.' },
+
+  { id:'error',        x:800, y:500,  w:128, h:40, cat:'error', icon:'❌', label:'Error Handler', sub:'status: failed',
+    desc:'PURPOSE: The last resort when a step has failed too many times and there is no point retrying further. It gracefully ends the pipeline and records the failure.\n\nWHEN IT ACTIVATES: Any of the three retryable nodes (Research, Outline, Writer) fails 3 times in a row.\n\nWHAT IT DOES: Marks the job status as "failed" and records the current timestamp. It then routes to END, which triggers the FastAPI background task to save the failure to the database — including the error message — so the caller can see exactly what went wrong when they check the job status.\n\nOUTPUT: A failed job record in the database with a human-readable error message. No article is produced, but the failure is clean, logged, and visible. The job can later be re-submitted if desired.' }
+];
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EDGES — use orthogonal (right-angle) routing for clean n8n-style look.
+   Each edge can specify:
+     from, to       — node ids
+     color           — stroke colour
+     dash            — dashed line
+     label           — text label near midpoint
+     waypoints       — optional array of {x,y} for explicit routing
+     fromSide/toSide — force anchor: 'top','bottom','left','right'
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const EDGES = [
+  // ── Main pipeline flow (solid blue) ───────────────
+  { from:'start',       to:'orchestrator', color:'#388bfd', fromSide:'bottom', toSide:'top' },
+  { from:'orchestrator',to:'research',     color:'#58a6ff', fromSide:'bottom', toSide:'top' },
+  { from:'research',    to:'outline',      color:'#58a6ff', fromSide:'bottom', toSide:'top', label:'serp_results ✓' },
+  { from:'outline',     to:'writer',       color:'#58a6ff', fromSide:'bottom', toSide:'top', label:'outline ✓' },
+  { from:'writer',      to:'qa',           color:'#58a6ff', fromSide:'bottom', toSide:'top', label:'article_draft ✓' },
+  { from:'qa',          to:'output',       color:'#58a6ff', fromSide:'bottom', toSide:'top', label:'score ≥ 80 ✓' },
+  { from:'output',      to:'end',          color:'#388bfd', fromSide:'bottom', toSide:'top' },
+
+  // ── QA → Writer revision loop (red, curved left) ──
+  { from:'qa', to:'writer', color:'#f85149', fromSide:'left', toSide:'left', label:'score < 80 (revise)',
+    waypoints:[{x:528,y:601},{x:528,y:640},{x:480,y:640},{x:480,y:400},{x:528,y:400},{x:528,y:461}] },
+
+  // ── Tool invocations (dashed green) ───────────────
+  { from:'research',    to:'serp_tool',    color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+  { from:'research',    to:'theme_tool',   color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+  { from:'outline',     to:'outline_tool', color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+  { from:'writer',      to:'article_tool', color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+  { from:'writer',      to:'meta_tool',    color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+  { from:'writer',      to:'link_tool',    color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+  { from:'qa',          to:'seo_valid',    color:'#3fb950', dash:true, fromSide:'left', toSide:'right' },
+
+  // ── Tool → LLM (dashed purple) ────────────────────
+  { from:'theme_tool',  to:'llm', color:'#bc8cff', dash:true, fromSide:'left', toSide:'right' },
+  { from:'outline_tool',to:'llm', color:'#bc8cff', dash:true, fromSide:'left', toSide:'right' },
+  { from:'article_tool',to:'llm', color:'#bc8cff', dash:true, fromSide:'left', toSide:'right' },
+  { from:'meta_tool',   to:'llm', color:'#bc8cff', dash:true, fromSide:'left', toSide:'right' },
+  { from:'link_tool',   to:'llm', color:'#bc8cff', dash:true, fromSide:'left', toSide:'right' },
+
+  // ── serp_tool → SerpAPI (dashed yellow) ───────────
+  { from:'serp_tool',   to:'serpapi', color:'#d29922', dash:true, fromSide:'left', toSide:'right' },
+
+  // ── Scoring ───────────────────────────────────────
+  { from:'seo_valid',   to:'scoring', color:'#f778ba', dash:true, fromSide:'bottom', toSide:'top' },
+
+  // ── Error paths (dashed red, routed right) ────────
+  { from:'research', to:'retry', color:'#f85149', dash:true, fromSide:'right', toSide:'left',
+    label:'on error' },
+  { from:'outline',  to:'retry', color:'#f85149', dash:true, fromSide:'right', toSide:'left' },
+  { from:'writer',   to:'retry', color:'#f85149', dash:true, fromSide:'right', toSide:'left' },
+  { from:'retry',    to:'error', color:'#f85149', dash:true, fromSide:'bottom', toSide:'top', label:'retries ≥ 3' },
+  { from:'error',    to:'end',   color:'#f85149', fromSide:'bottom', toSide:'right',
+    label:'status: failed',
+    waypoints:[{x:864,y:540},{x:864,y:800},{x:670,y:800}] },
+
+  // ── State connections (dashed grey) ────────────────
+  { from:'orchestrator', to:'state', color:'#8b949e', dash:true, fromSide:'right', toSide:'left', label:'init state' },
+  { from:'retry',        to:'state', color:'#8b949e', dash:true, fromSide:'top',   toSide:'bottom', label:'update counts' },
+
+  // ── FastAPI → START (dashed yellow) ───────────────
+  { from:'fastapi', to:'start', color:'#d29922', dash:true, fromSide:'right', toSide:'left',
+    label:'POST /jobs/',
+    waypoints:[{x:168,y:69},{x:300,y:69},{x:300,y:44},{x:580,y:44}] },
+
+  // ── DB connections (dashed green) ─────────────────
+  { from:'fastapi',    to:'postgres',   color:'#39d353', dash:true, fromSide:'bottom', toSide:'top',
+    label:'CRUD',
+    waypoints:[{x:114,y:88},{x:114,y:700}] },
+  { from:'postgres',   to:'checkpoint', color:'#39d353', dash:true, fromSide:'right',  toSide:'left' },
+  { from:'output',     to:'postgres',   color:'#39d353', dash:true, fromSide:'bottom', toSide:'right',
+    label:'persist result',
+    waypoints:[{x:625,y:742},{x:625,y:760},{x:300,y:760},{x:300,y:740},{x:168,y:740}] },
+];
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RENDERING ENGINE
+   ═══════════════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('canvas');
+const tooltip = document.getElementById('tooltip');
+let scale = 1, panX = 0, panY = 0;
+let dragging = false, dragStartX = 0, dragStartY = 0;
+
+const inner = document.createElement('div');
+inner.style.cssText = 'position:absolute;top:0;left:0;transform-origin:0 0;width:1100px;height:900px;';
+canvas.appendChild(inner);
+
+function applyTransform() {
+  inner.style.transform = `translate(${panX}px,${panY}px) scale(${scale})`;
+}
+
+// ── SVG layer ──────────────────────────────────────
+const svgNS = 'http://www.w3.org/2000/svg';
+const svg = document.createElementNS(svgNS, 'svg');
+svg.classList.add('arrows');
+svg.setAttribute('width', '1100');
+svg.setAttribute('height', '900');
+
+const defs = document.createElementNS(svgNS, 'defs');
+const usedColors = [...new Set(EDGES.map(e => e.color))];
+usedColors.forEach(c => {
+  const marker = document.createElementNS(svgNS, 'marker');
+  const cid = c.replace('#','');
+  marker.setAttribute('id', 'arr-' + cid);
+  marker.setAttribute('viewBox', '0 0 8 6');
+  marker.setAttribute('refX', '8');
+  marker.setAttribute('refY', '3');
+  marker.setAttribute('markerWidth', '7');
+  marker.setAttribute('markerHeight', '5');
+  marker.setAttribute('orient', 'auto-start-reverse');
+  const poly = document.createElementNS(svgNS, 'polygon');
+  poly.setAttribute('points', '0 0, 8 3, 0 6');
+  poly.setAttribute('fill', c);
+  marker.appendChild(poly);
+  defs.appendChild(marker);
+});
+svg.appendChild(defs);
+inner.appendChild(svg);
+
+// ── Draw nodes ──────────────────────────────────────
+const nodeMap = {};
+NODES.forEach(n => { nodeMap[n.id] = n; });
+
+NODES.forEach(n => {
+  const el = document.createElement('div');
+  el.className = `node cat-${n.cat}`;
+  el.style.left = n.x + 'px';
+  el.style.top = n.y + 'px';
+  el.style.width = n.w + 'px';
+  el.style.height = n.h + 'px';
+  el.innerHTML = `<span class="icon">${n.icon}</span><span class="label">${n.label}</span>${n.sub ? `<span class="sub">${n.sub}</span>` : ''}`;
+  el.dataset.id = n.id;
+  inner.appendChild(el);
+});
+
+// ── Anchor helper ──────────────────────────────────
+function anchor(id, side) {
+  const n = nodeMap[id];
+  const cx = n.x + n.w / 2, cy = n.y + n.h / 2;
+  switch (side) {
+    case 'top':    return { x: cx,          y: n.y };
+    case 'bottom': return { x: cx,          y: n.y + n.h };
+    case 'left':   return { x: n.x,         y: cy };
+    case 'right':  return { x: n.x + n.w,   y: cy };
+    default:       return { x: cx, y: cy };
+  }
+}
+
+// ── Smart orthogonal path between two points ───────
+function orthoPath(p1, s1, p2, s2) {
+  // Build a simple 2-segment or 3-segment orthogonal path
+  const pts = [p1];
+  const isVert1 = (s1 === 'top' || s1 === 'bottom');
+  const isVert2 = (s2 === 'top' || s2 === 'bottom');
+  const gap = 14;
+
+  if (isVert1 && isVert2) {
+    // Both vertical: go down/up to midpoint, then across, then down/up
+    const my = (p1.y + p2.y) / 2;
+    pts.push({ x: p1.x, y: my });
+    pts.push({ x: p2.x, y: my });
+  } else if (!isVert1 && !isVert2) {
+    // Both horizontal
+    const mx = (p1.x + p2.x) / 2;
+    pts.push({ x: mx, y: p1.y });
+    pts.push({ x: mx, y: p2.y });
+  } else if (isVert1 && !isVert2) {
+    pts.push({ x: p1.x, y: p2.y });
+  } else {
+    pts.push({ x: p2.x, y: p1.y });
+  }
+  pts.push(p2);
+  return pts;
+}
+
+// ── Build SVG path string with rounded corners ─────
+function buildPathD(points) {
+  if (points.length < 2) return '';
+  const r = 6; // corner radius
+  let d = `M${points[0].x},${points[0].y}`;
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1], cur = points[i], next = points[i + 1];
+    const dx1 = cur.x - prev.x, dy1 = cur.y - prev.y;
+    const dx2 = next.x - cur.x, dy2 = next.y - cur.y;
+    const len1 = Math.sqrt(dx1*dx1 + dy1*dy1);
+    const len2 = Math.sqrt(dx2*dx2 + dy2*dy2);
+    const cr = Math.min(r, len1/2, len2/2);
+    if (cr < 1 || len1 < 1 || len2 < 1) {
+      d += ` L${cur.x},${cur.y}`;
+      continue;
+    }
+    const ax = cur.x - (dx1/len1)*cr, ay = cur.y - (dy1/len1)*cr;
+    const bx = cur.x + (dx2/len2)*cr, by = cur.y + (dy2/len2)*cr;
+    d += ` L${ax},${ay} Q${cur.x},${cur.y} ${bx},${by}`;
+  }
+  d += ` L${points[points.length-1].x},${points[points.length-1].y}`;
+  return d;
+}
+
+// ── Draw edges ──────────────────────────────────────
+EDGES.forEach(e => {
+  const p1 = anchor(e.from, e.fromSide || 'bottom');
+  const p2 = anchor(e.to,   e.toSide   || 'top');
+  const c = e.color || '#58a6ff';
+  const markerId = 'arr-' + c.replace('#','');
+
+  let points;
+  if (e.waypoints) {
+    points = [p1, ...e.waypoints, p2];
+  } else {
+    points = orthoPath(p1, e.fromSide || 'bottom', p2, e.toSide || 'top');
+  }
+
+  const pathD = buildPathD(points);
+  const path = document.createElementNS(svgNS, 'path');
+  path.setAttribute('d', pathD);
+  path.setAttribute('stroke', c);
+  path.setAttribute('marker-end', `url(#${markerId})`);
+  if (e.dash) path.setAttribute('stroke-dasharray', '5,4');
+  path.style.opacity = '0.75';
+  svg.appendChild(path);
+
+  if (e.label) {
+    // Place label near the midpoint of the path
+    const mi = Math.floor(points.length / 2);
+    const lp = points[mi];
+    const pp = points[mi - 1] || lp;
+    const mx = (lp.x + pp.x) / 2, my = (lp.y + pp.y) / 2;
+
+    // Background rect for readability
+    const bg = document.createElementNS(svgNS, 'rect');
+    const tx = document.createElementNS(svgNS, 'text');
+    tx.setAttribute('x', mx);
+    tx.setAttribute('y', my - 3);
+    tx.setAttribute('fill', c);
+    tx.setAttribute('font-size', '8.5');
+    tx.setAttribute('font-family', 'Segoe UI, system-ui, sans-serif');
+    tx.setAttribute('text-anchor', 'middle');
+    tx.setAttribute('dominant-baseline', 'auto');
+    tx.textContent = e.label;
+    svg.appendChild(tx);
+
+    // Add dark background behind label
+    const bbox = tx.getBBox ? tx.getBBox() : { x: mx-30, y: my-12, width: 60, height: 12 };
+    bg.setAttribute('x', bbox.x - 3);
+    bg.setAttribute('y', bbox.y - 1);
+    bg.setAttribute('width', bbox.width + 6);
+    bg.setAttribute('height', bbox.height + 2);
+    bg.setAttribute('fill', '#0d1117');
+    bg.setAttribute('rx', '3');
+    bg.style.opacity = '0.85';
+    svg.insertBefore(bg, tx);
+  }
+});
+
+// ── Tooltip ─────────────────────────────────────────
+const catLabels = {
+  entry:'Entry Point', node:'Graph Node', tool:'LangChain Tool', llm:'LLM Model',
+  api:'External API', db:'Database', state:'Shared State', error:'Error / Retry',
+  end:'Exit Point', valid:'Validation Tool', score:'SEO Scoring'
+};
+const catColors = {
+  entry:'#388bfd', node:'#58a6ff', tool:'#3fb950', llm:'#bc8cff',
+  api:'#d29922', db:'#39d353', state:'#8b949e', error:'#f85149',
+  end:'#388bfd', valid:'#3fb950', score:'#f778ba'
+};
+
+document.addEventListener('mousemove', e => {
+  const n = e.target.closest('.node');
+  if (n) {
+    const data = nodeMap[n.dataset.id];
+    if (!data) return;
+    tooltip.querySelector('.tt-title').textContent = data.label + (data.sub ? ` — ${data.sub}` : '');
+    const tag = tooltip.querySelector('.tt-tag');
+    tag.textContent = catLabels[data.cat] || data.cat;
+    tag.style.background = (catColors[data.cat] || '#8b949e') + '25';
+    tag.style.color = catColors[data.cat] || '#8b949e';
+    tooltip.querySelector('.tt-body').textContent = data.desc;
+    tooltip.classList.add('visible');
+
+    let tx = e.clientX + 18, ty = e.clientY - 8;
+    // Force reflow to get accurate height
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = ty + 'px';
+    const th = tooltip.offsetHeight, tw = tooltip.offsetWidth;
+    if (tx + tw + 10 > window.innerWidth) tx = e.clientX - tw - 14;
+    if (ty + th + 10 > window.innerHeight) ty = window.innerHeight - th - 10;
+    if (ty < 8) ty = 8;
+    tooltip.style.left = tx + 'px';
+    tooltip.style.top = ty + 'px';
+  } else {
+    tooltip.classList.remove('visible');
+  }
+});
+
+// ── Pan & Zoom ──────────────────────────────────────
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? 0.93 : 1.07;
+  const newScale = Math.max(0.25, Math.min(3, scale * delta));
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  panX = mx - (mx - panX) * (newScale / scale);
+  panY = my - (my - panY) * (newScale / scale);
+  scale = newScale;
+  applyTransform();
+}, { passive: false });
+
+canvas.addEventListener('mousedown', e => {
+  if (e.target.closest('.node')) return;
+  dragging = true;
+  dragStartX = e.clientX - panX;
+  dragStartY = e.clientY - panY;
+  canvas.classList.add('dragging');
+});
+window.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  panX = e.clientX - dragStartX;
+  panY = e.clientY - dragStartY;
+  applyTransform();
+});
+window.addEventListener('mouseup', () => {
+  dragging = false;
+  canvas.classList.remove('dragging');
+});
+
+document.getElementById('zoomIn').onclick  = () => { scale = Math.min(3, scale * 1.2); applyTransform(); };
+document.getElementById('zoomOut').onclick = () => { scale = Math.max(0.25, scale / 1.2); applyTransform(); };
+document.getElementById('zoomFit').onclick = () => { scale = 1; panX = (window.innerWidth - 1000) / 2; panY = 30; applyTransform(); };
+
+// Initial centering
+panX = (window.innerWidth - 1000) / 2;
+panY = 30;
+applyTransform();
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+langgraph>=0.2.0
+langchain-openai
+langchain-core
+psycopg[binary,pool]
+langgraph-checkpoint-postgres
+pydantic>=2.0
+pydantic-settings
+python-dotenv
+requests
+sqlalchemy[asyncio]
+asyncpg
+alembic
+httpx
+pytest
+pytest-asyncio
