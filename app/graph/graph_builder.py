@@ -11,6 +11,7 @@ from app.graph.nodes.qa import qa_node
 from app.graph.nodes.research import research_node
 from app.graph.nodes.writer import writer_node
 from app.graph.state import ArticleGenerationState
+from config.config import cfg
 
 
 # ── Inline error-handler node ─────────────────────────────────────────────────
@@ -55,7 +56,7 @@ def route_after_writer(state: ArticleGenerationState) -> str:
 def route_after_qa(state: ArticleGenerationState) -> str:
     if state.get("status") == "done":
         return "output"
-    if (state.get("revision_count") or 0) >= 3:
+    if (state.get("revision_count") or 0) >= cfg.hyperparams.pipeline.max_revisions:
         return "output"  # publish best effort
     return "writer"
 

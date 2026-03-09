@@ -11,10 +11,13 @@ from langgraph.prebuilt import create_react_agent
 from app.graph.state import ArticleGenerationState, OutlineOutput
 from app.graph.tools import get_llm
 from app.graph.tools.outline_builder import outline_builder_tool
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = 10
+
+def _get_max_iterations() -> int:
+    return cfg.hyperparams.agent.outline_max_iterations
 
 
 def _normalize_tool(t, name: str):
@@ -80,59 +83,7 @@ def _build_outline_agent():
             _normalize_tool(outline_builder_tool, "outline_builder_tool"),
             _normalize_tool(keyword_mapper_tool, "keyword_mapper_tool"),
         ],
-        prompt="""You are OutlineAgent, a specialized AI agent responsible for creating high-quality, SEO-optimized article outlines.
-
-## YOUR OBJECTIVES:
-1. Call outline_builder_tool with the provided themes_json, keywords_json, and word_count parameters.
-2. Wait for the structured outline response.
-3. Call keyword_mapper_tool to ensure keywords are properly assigned to each section.
-4. Extract and return a valid JSON response.
-
-## CRITICAL RULES YOU MUST FOLLOW:
-
-### STEP 1: Use outline_builder_tool
-- ALWAYS call outline_builder_tool first with the exact parameters provided.
-- Pass: themes_json, keywords_json, word_count
-- DO NOT modify or reformat these inputs.
-- Wait for a complete response before proceeding.
-
-### STEP 2: Process the Result
-- The tool will return a JSON string containing the outline structure.
-- Extract this outline carefully.
-- Verify it contains:
-  * title (string)
-  * sections (array of objects, each with: title, level, keywords, word_target)
-
-### STEP 3: Map Keywords (Optional Enhancement)
-- If the outline has missing or sparse keywords, call keyword_mapper_tool.
-- Pass the outline_json and keywords_json.
-- This enriches keyword coverage.
-
-### STEP 4: Final Output
-- Combine results into a single JSON object with key "outline" containing the sections array.
-- Format: {"outline": [section1, section2, ...]}
-- Each section MUST have: title (string), level (H1/H2/H3), keywords (array of strings), word_target (positive integer).
-
-## VALIDATION CHECKLIST BEFORE RETURNING:
-✓ outline key exists and contains a list
-✓ At least 1 H1 section exists
-✓ At least 4 H2 sections exist
-✓ Each H3 is a child of an H2
-✓ All word_target values are positive integers
-✓ All keywords are strings
-✓ No sections have empty titles
-✓ level is one of: H1, H2, or H3
-
-## IF TOOL FAILS:
-- Do NOT attempt to manually construct an outline.
-- Clearly state the error and request retry.
-- Do NOT fabricate data.
-
-## OUTPUT FORMAT (FINAL):
-You MUST return ONLY valid JSON when done. No explanations, no extra text. Format:
-{"outline": [...]}
-
-BEGIN NOW: Execute outline_builder_tool with the provided parameters.""",
+        prompt=cfg.prompts.agents.outline,
     )
 
 
@@ -167,28 +118,24 @@ def _validate_and_fix_outline(
     sections: List[Any],
     target_word_count: int,
 ) -> List[Any]:
-    """Ensure outline word_targets are sane and sum to the target.
-
-    * At least 4 H2 sections.
-    * Each H2 word_target ≥ 150.
-    * Total allocated words within ±10 % of target; redistribute if not.
-    """
+    """Ensure outline word_targets are sane and sum to the target."""
+    hp = cfg.hyperparams.outline
     h2_sections = [s for s in sections if s.level == "H2"]
 
-    if len(h2_sections) < 4:
+    if len(h2_sections) < hp.min_h2_sections:
         logger.warning(
-            "   ⚠️  Outline has only %d H2 sections (need ≥ 4). Outline may be thin.",
-            len(h2_sections),
+            "   ⚠️  Outline has only %d H2 sections (need ≥ %d). Outline may be thin.",
+            len(h2_sections), hp.min_h2_sections,
         )
 
     # Enforce minimum per-H2
     for s in h2_sections:
-        if s.word_target < 150:
-            s.word_target = 150
+        if s.word_target < hp.min_h2_word_target:
+            s.word_target = hp.min_h2_word_target
 
     # Check total allocation
     total_allocated = sum(s.word_target for s in sections if s.level in ("H2", "H3"))
-    lower = int(target_word_count * 0.90)
+    lower = int(target_word_count * hp.word_allocation_lower_bound)
     if total_allocated < lower and h2_sections:
         deficit = target_word_count - total_allocated
         per_h2 = deficit // len(h2_sections)
@@ -213,7 +160,7 @@ def outline_node(state: ArticleGenerationState) -> dict:
 
         themes_json = json.dumps(state.get("common_themes") or [])
         keywords_json = json.dumps([k.model_dump() for k in (state.get("extracted_keywords") or [])])
-        word_count: int = state.get("word_count") or 1500
+        word_count: int = state.get("word_count") or cfg.hyperparams.pipeline.default_word_count
 
         logger.info("   Themes: %s", state.get("common_themes"))
         logger.info("   Target words: %d", word_count)
@@ -228,7 +175,7 @@ def outline_node(state: ArticleGenerationState) -> dict:
         try:
             agent_result = agent.invoke(
                 {"messages": [("user", user_message)]},
-                config={"recursion_limit": MAX_AGENT_ITERATIONS},
+                config={"recursion_limit": _get_max_iterations()},
             )
             payload = _extract_agent_payload(agent_result)
             output = _coerce_outline(payload)

@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 
 from app.graph.state import SerpResult, ThemeAnalysis, Keyword
 from app.graph.tools import get_llm
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -35,19 +36,16 @@ def theme_extractor_tool(serp_results_json: str) -> str:
             for r in serp_results
         )
 
-        prompt = f"""You are an SEO content strategist. Analyze the following 10 Google search results
-and extract structured insights.
-
-SERP Results:
-{results_text}
-
-Extract:
-1. The top 5 overarching themes covered across these results.
-2. The primary keyword plus 5-8 secondary keywords, with frequency estimates (how many results mention them) and whether each is the primary keyword.
-3. A list of competitor heading structures (each entry is a dict with 'url' and 'headings' as a list of strings).
-4. 5–8 FAQ questions a reader would ask about this topic.
-
-Return a fully populated ThemeAnalysis."""
+        th = cfg.hyperparams.theme_extractor
+        prompt = cfg.prompts.tools.theme_extractor.format(
+            results_count=len(serp_results),
+            results_text=results_text,
+            themes_count=th.themes_count,
+            keywords_min=th.keywords_min,
+            keywords_max=th.keywords_max,
+            faqs_min=th.faqs_min,
+            faqs_max=th.faqs_max,
+        )
 
         result: ThemeAnalysis = structured_llm.invoke(prompt)
         result_json = result.model_dump_json()

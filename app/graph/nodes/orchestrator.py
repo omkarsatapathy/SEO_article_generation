@@ -11,10 +11,19 @@ from langgraph.prebuilt import create_react_agent
 
 from app.graph.state import ArticleGenerationState
 from app.graph.tools import get_llm
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = 10
+# Resolved lazily from config so tests can override cfg before importing
+_MAX_AGENT_ITERATIONS = None
+
+
+def _get_max_iterations() -> int:
+    global _MAX_AGENT_ITERATIONS
+    if _MAX_AGENT_ITERATIONS is None:
+        _MAX_AGENT_ITERATIONS = cfg.hyperparams.agent.orchestrator_max_iterations
+    return _MAX_AGENT_ITERATIONS
 
 
 def _normalize_tool(t, name: str):
@@ -67,8 +76,10 @@ def validate_input_tool(topic: str, word_count: Optional[int] = None, language: 
     if not topic_clean:
         raise ValueError("'topic' must be a non-empty string.")
 
-    resolved_word_count = int(word_count) if word_count else 1500
-    resolved_language = (language or "en").strip() or "en"
+    default_wc = cfg.hyperparams.pipeline.default_word_count
+    default_lang = cfg.hyperparams.pipeline.default_language
+    resolved_word_count = int(word_count) if word_count else default_wc
+    resolved_language = (language or default_lang).strip() or default_lang
 
     return {
         "topic": topic_clean,
@@ -101,13 +112,7 @@ def _build_orchestrator_agent():
             _normalize_tool(validate_input_tool, "validate_input_tool"),
             _normalize_tool(job_init_tool, "job_init_tool"),
         ],
-        prompt=(
-            "You are OrchestratorAgent. Validate inputs and initialise a job. "
-            "Use validate_input_tool to clean the topic/word_count/language, then call "
-            "job_init_tool to generate IDs and timestamps. Stop when you can return a JSON "
-            "object with job_id, word_count, language, status, retry_counts, revision_count, "
-            "created_at, updated_at."
-        ),
+        prompt=cfg.prompts.agents.orchestrator,
     )
 
 
@@ -144,8 +149,8 @@ def orchestrator_node(state: ArticleGenerationState) -> dict:
     logger.info("═══════════════════════════════════════════════════")
     logger.info("🚀 PIPELINE STARTED")
     logger.info("   Topic:      %s", topic)
-    logger.info("   Word count: %s", state.get("word_count") or 1500)
-    logger.info("   Language:   %s", state.get("language") or "en")
+    logger.info("   Word count: %s", state.get("word_count") or cfg.hyperparams.pipeline.default_word_count)
+    logger.info("   Language:   %s", state.get("language") or cfg.hyperparams.pipeline.default_language)
 
     user_message = (
         f"Validate inputs and initialise a new SEO article generation job. "
@@ -157,7 +162,7 @@ def orchestrator_node(state: ArticleGenerationState) -> dict:
     try:
         agent_result = agent.invoke(
             {"messages": [("user", user_message)]},
-            config={"recursion_limit": MAX_AGENT_ITERATIONS},
+            config={"recursion_limit": _get_max_iterations()},
         )
         payload = _extract_agent_payload(agent_result)
     except Exception as agent_exc:
@@ -174,10 +179,12 @@ def orchestrator_node(state: ArticleGenerationState) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     retry_counts = payload.get("retry_counts") or {"research": 0, "outline": 0, "writer": 0, "qa": 0}
 
+    default_wc = cfg.hyperparams.pipeline.default_word_count
+    default_lang = cfg.hyperparams.pipeline.default_language
     final_state = {
         "job_id": payload.get("job_id") or str(uuid4()),
-        "word_count": payload.get("word_count") or state.get("word_count") or 1500,
-        "language": payload.get("language") or state.get("language") or "en",
+        "word_count": payload.get("word_count") or state.get("word_count") or default_wc,
+        "language": payload.get("language") or state.get("language") or default_lang,
         "status": payload.get("status") or "researching",
         "retry_counts": retry_counts,
         "revision_count": payload.get("revision_count", state.get("revision_count", 0)) or 0,

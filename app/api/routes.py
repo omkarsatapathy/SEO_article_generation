@@ -11,6 +11,7 @@ from app.config import settings
 from app.db.repository import JobRepository, get_session_factory
 from app.graph.graph_builder import build_graph
 from app.graph.state import ArticleGenerationState
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,13 @@ async def get_repo() -> JobRepository:
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class CreateJobRequest(BaseModel):
-    topic: str = Field(..., min_length=3)
-    word_count: int = Field(default=1500, ge=500, le=5000)
-    language: str = Field(default="en")
+    topic: str = Field(..., min_length=cfg.hyperparams.article.topic_min_length)
+    word_count: int = Field(
+        default=cfg.hyperparams.article.word_count_default,
+        ge=cfg.hyperparams.article.word_count_min,
+        le=cfg.hyperparams.article.word_count_max,
+    )
+    language: str = Field(default=cfg.hyperparams.pipeline.default_language)
 
 
 class JobStatusResponse(BaseModel):

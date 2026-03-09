@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Tuple
 from langchain_core.tools import tool
 
 from app.graph.state import ArticleDraft
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -57,24 +58,20 @@ def _generate_intro(
     qa_feedback: str,
     research_context: str = "",
 ) -> str:
-    """Generate the intro paragraph (120-150 words)."""
+    """Generate the intro paragraph."""
+    hp = cfg.hyperparams.writing
     qa_block = f"\n⚠️ QA REVISION FEEDBACK — address these issues:\n{qa_feedback}\n" if qa_feedback else ""
     research_block = f"\nResearch context (use for factual grounding):\n{research_context}\n" if research_context else ""
-    prompt = f"""Write an engaging introduction paragraph for an SEO article titled "# {h1_heading}" in {language}.
-
-Primary keyword: {primary_kw}
-Article themes: {themes_json}
-Target: 120–150 words.
-{research_block}{qa_block}
-RULES:
-- Hook the reader in the first sentence.
-- State the primary keyword "{primary_kw}" within the first two sentences.
-- Clearly state what the article covers.
-- Do NOT include the H1 heading — just the paragraph text.
-- Write flowing, natural prose. No bullet points.
-- Complete every sentence fully.
-
-Write the introduction now:"""
+    prompt = cfg.prompts.tools.intro.format(
+        h1_heading=h1_heading,
+        language=language,
+        primary_kw=primary_kw,
+        themes_json=themes_json,
+        intro_word_min=hp.intro_word_min,
+        intro_word_max=hp.intro_word_max,
+        research_block=research_block,
+        qa_block=qa_block,
+    )
     return _llm_text(llm, prompt)
 
 
@@ -91,6 +88,7 @@ def _generate_section(
     research_context: str = "",
 ) -> str:
     """Generate one H2 section (with child H3s) via raw LLM call, retry if short."""
+    hp = cfg.hyperparams.writing
     h2 = block["h2"]
     h3s = block["h3s"]
 
@@ -107,46 +105,40 @@ def _generate_section(
             f"\n- ### {h3['heading']} ({h3_target} words) — keywords: {h3.get('keywords', [])}"
         )
 
-    min_words = int(total_target * 0.85)
-    max_words = int(total_target * 1.20)
+    min_words = int(total_target * hp.section_min_multiplier)
+    max_words = int(total_target * hp.section_max_multiplier)
     qa_block = f"\n⚠️ QA FEEDBACK for this revision — address ALL issues:\n{qa_feedback}\n" if qa_feedback else ""
 
     # Budget awareness: if a remaining_budget is provided, cap so we don't overshoot
     if remaining_budget is not None and remaining_budget < total_target:
         total_target = max(remaining_budget, 100)
-        min_words = int(total_target * 0.85)
-        max_words = int(total_target * 1.15)
+        min_words = int(total_target * hp.section_min_multiplier)
+        max_words = int(total_target * (1.0 + (hp.section_max_multiplier - 1.0) * 0.75))
 
-    research_block = f"\nResearch context (use as factual grounding — cite insights naturally):\n{research_context}\n" if research_context else ""
-    prompt = f"""Write the following section of an SEO article in {language}.
-{research_block}{qa_block}
-## {h2_heading}
+    research_block = (
+        f"\nResearch context (use as factual grounding — cite insights naturally):\n{research_context}\n"
+        if research_context else ""
+    )
 
-Word target for this section (including sub-sections): {total_target} words.
-Acceptable range: {min_words}–{max_words} words. Do NOT exceed {max_words} words.
-Section keywords: {h2_keywords}
+    h3_block = h3_instructions if h3_instructions else " (none — write this as a single H2 section)"
+    prev_content = article_so_far[-hp.context_lookback_chars:] if article_so_far else "(First section.)"
 
-Sub-sections to include:{h3_instructions if h3_instructions else " (none — write this as a single H2 section)"}
-
-Primary keyword: {primary_kw}
-All keywords: {keywords_json}
-Themes: {themes_json}
-
-RULES:
-- Start output with "## {h2_heading}" on its own line.
-- Write {min_words}–{max_words} words. Stay within this range.
-- Write 2–3 paragraphs per section, each 60–120 words. Develop points with examples and explanations.
-- Use the primary keyword once naturally in this section. Use semantic variants elsewhere.
-- Include sub-section headings as ### if specified above; each H3 gets ≥ 80 words.
-- Do NOT use bullet lists. Write flowing prose.
-- Do NOT include any preamble or meta-commentary. Output ONLY the section content in Markdown.
-- Do NOT leave sentences unfinished. Complete every paragraph fully.
-- End with a smooth transition to the next section.
-
-Previous content (for continuity):
-{article_so_far[-800:] if article_so_far else "(First section.)"}
-
-Write the complete section now:"""
+    prompt = cfg.prompts.tools.section.format(
+        language=language,
+        research_block=research_block,
+        qa_block=qa_block,
+        h2_heading=h2_heading,
+        total_target=total_target,
+        min_words=min_words,
+        max_words=max_words,
+        h2_keywords=h2_keywords,
+        h3_block=h3_block,
+        primary_kw=primary_kw,
+        keywords_json=keywords_json,
+        themes_json=themes_json,
+        h3_min_words=hp.h3_min_words,
+        prev_content=prev_content,
+    )
 
     content = _llm_text(llm, prompt)
 
@@ -156,13 +148,11 @@ Write the complete section now:"""
             "   ⚠️  Section '%s' too short: %d/%d words. Expanding…",
             h2_heading, _word_count(content), total_target,
         )
-        expand_prompt = f"""The section below is only {_word_count(content)} words but needs at least {total_target} words.
-REWRITE and EXPAND it to {total_target}+ words. Add more detail, data points, examples, and explanations.
-Keep the same heading structure and topic. Output ONLY the expanded Markdown section.
-
-{content}
-
-Expanded section:"""
+        expand_prompt = cfg.prompts.tools.section_expand.format(
+            curr_word_count=_word_count(content),
+            target=total_target,
+            content=content,
+        )
         expanded = _llm_text(llm, expand_prompt)
         if _word_count(expanded) > _word_count(content):
             content = expanded
@@ -172,41 +162,27 @@ Expanded section:"""
 
 def _generate_faq(llm, faq_questions: List[str], primary_kw: str, language: str) -> str:
     """Generate the FAQ section with all questions answered."""
+    hp = cfg.hyperparams.writing
     q_list = "\n".join(f"- {q}" for q in faq_questions)
-    prompt = f"""Write an FAQ section for an SEO article in {language}.
-
-Questions:
-{q_list}
-
-Primary keyword: {primary_kw}
-
-RULES:
-- Start with "## Frequently Asked Questions" on its own line.
-- Each question becomes an ### heading followed by a thorough answer (≥ 80 words).
-- Use the primary keyword naturally where relevant.
-- Write flowing prose. No bullet lists.
-- Output ONLY the FAQ section in Markdown.
-
-Write the FAQ section now:"""
+    prompt = cfg.prompts.tools.faq.format(
+        language=language,
+        q_list=q_list,
+        primary_kw=primary_kw,
+        faq_min_words=hp.faq_answer_min_words,
+    )
     return _llm_text(llm, prompt)
 
 
 def _generate_conclusion(llm, h1_heading: str, primary_kw: str, language: str) -> str:
-    """Generate the conclusion (100-150 words)."""
-    prompt = f"""Write a conclusion for the SEO article "{h1_heading}" in {language}.
-
-Primary keyword: {primary_kw}
-Target: 100–150 words.
-
-RULES:
-- Start with "## Conclusion" on its own line.
-- Summarise key takeaways from the article.
-- Include a clear call-to-action.
-- Use the primary keyword once naturally.
-- Write flowing prose. No bullet points.
-- Complete every sentence fully.
-
-Write the conclusion now:"""
+    """Generate the conclusion."""
+    hp = cfg.hyperparams.writing
+    prompt = cfg.prompts.tools.conclusion.format(
+        h1_heading=h1_heading,
+        language=language,
+        primary_kw=primary_kw,
+        conclusion_word_min=hp.conclusion_word_min,
+        conclusion_word_max=hp.conclusion_word_max,
+    )
     return _llm_text(llm, prompt)
 
 
@@ -217,7 +193,7 @@ def article_writer_tool(
     themes_json: str,
     language: str,
     faq_questions_json: str,
-    target_word_count: int = 1500,
+    target_word_count: int = 0,  # 0 → resolved to cfg default at runtime
     qa_feedback: str = "",
     serp_results_json: str = "[]",
     competitor_structures_json: str = "[]",
@@ -230,23 +206,28 @@ def article_writer_tool(
     keywords = json.loads(keywords_json)
     faq_questions = json.loads(faq_questions_json)
 
+    # Resolve default word count from config if not explicitly provided
+    if not target_word_count:
+        target_word_count = cfg.hyperparams.article.word_count_default
+
     primary_kw = next((k["word"] for k in keywords if k.get("is_primary")), "")
 
     h1, h2_blocks = _group_h2_blocks(outline)
     h1_heading = h1["heading"] if h1 else "Article"
-    max_total = int(target_word_count * 1.15)  # hard ceiling
+    hp_w = cfg.hyperparams.writing
+    max_total = int(target_word_count * hp_w.word_count_ceiling_multiplier)
 
     # Build a compact research context string from SERP snippets + competitor headings
     serp_results = json.loads(serp_results_json)
     competitor_structures = json.loads(competitor_structures_json)
     research_snippets = "\n".join(
         f"- [{r.get('title', '')}]: {r.get('snippet', '')}"
-        for r in serp_results[:5]
+        for r in serp_results[:hp_w.serp_results_limit]
         if r.get("snippet")
     )
     competitor_headings = "\n".join(
-        ", ".join(c.get("headings", [])[:4])
-        for c in competitor_structures[:3]
+        ", ".join(c.get("headings", [])[:hp_w.competitor_headings_limit])
+        for c in competitor_structures[:hp_w.competitor_structures_limit]
         if c.get("headings")
     )
     research_context = ""
@@ -291,7 +272,7 @@ def article_writer_tool(
     # ── 3. FAQ (only if not already an outline H2) ───────────────────────
     if faq_questions and not has_faq_section:
         remaining = max_total - cumulative
-        if remaining > 100:
+        if remaining > hp_w.faq_remaining_budget_min:
             faq = _generate_faq(llm, faq_questions, primary_kw, language)
             parts.append(faq)
             cumulative += _word_count(faq)
@@ -300,7 +281,7 @@ def article_writer_tool(
     # ── 4. Conclusion (only if not already an outline H2) ────────────────
     if not has_conclusion_section:
         remaining = max_total - cumulative
-        if remaining > 50:
+        if remaining > hp_w.conclusion_remaining_budget_min:
             conclusion = _generate_conclusion(llm, h1_heading, primary_kw, language)
             parts.append(conclusion)
             cumulative += _word_count(conclusion)

@@ -1,9 +1,13 @@
 import logging
 
+from config.config import cfg
+
+_log_cfg = cfg.settings.logging
+
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s │ %(levelname)-7s │ %(name)s │ %(message)s",
-    datefmt="%H:%M:%S",
+    level=getattr(logging, _log_cfg.level, logging.INFO),
+    format=_log_cfg.format,
+    datefmt=_log_cfg.datefmt,
 )
 
 
@@ -15,9 +19,10 @@ class EndpointFilter(logging.Filter):
         return self.path not in record.getMessage()
 
 
-# Add filter to uvicorn access logger
-logging.getLogger("uvicorn.access").addFilter(EndpointFilter("/jobs/"))
-logging.getLogger("uvicorn.access").addFilter(EndpointFilter("/health"))
+# Add filter to uvicorn access logger for paths defined in config
+_access_logger = logging.getLogger("uvicorn.access")
+for _filtered_path in cfg.settings.logging.filtered_paths:
+    _access_logger.addFilter(EndpointFilter(_filtered_path))
 
 from contextlib import asynccontextmanager
 
@@ -44,17 +49,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SEO Article Generation API",
-    version="1.0.0",
+    title=cfg.settings.app.title,
+    version=cfg.settings.app.version,
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cfg.settings.cors.allow_origins,
+    allow_credentials=cfg.settings.cors.allow_credentials,
+    allow_methods=cfg.settings.cors.allow_methods,
+    allow_headers=cfg.settings.cors.allow_headers,
 )
 
 app.include_router(router)

@@ -1,0 +1,37 @@
+# ============================================================
+# settings.yaml — Application-level settings
+# Non-secret defaults; secrets (API keys, DB URL) live in .env
+# ============================================================
+
+app:
+  title: "SEO Article Generation API"
+  version: "1.0.0"
+  host: "0.0.0.0"
+  port: 8000
+
+cors:
+  allow_origins:
+    - "*"
+  allow_credentials: true
+  allow_methods:
+    - "*"
+  allow_headers:
+    - "*"
+
+database:
+  default_url: "postgresql://user:pass@localhost:5432/seo_agent"
+
+llm:
+  model: "gpt-5-mini"
+  writer_model: "gpt-4.1"
+  temperature: 0.7
+  writer_temperature: 0.4
+  writer_max_tokens: 16000
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s \u2502 %(levelname)-7s \u2502 %(name)s \u2502 %(message)s"
+  datefmt: "%H:%M:%S"
+  filtered_paths:
+    - "/jobs/"
+    - "/health"

@@ -4,6 +4,7 @@ from langchain_core.tools import tool
 
 from app.graph.state import SeoMetadata
 from app.graph.tools import get_llm
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -13,24 +14,20 @@ def metadata_generator_tool(article_content: str, primary_keyword: str) -> str:
     """Generate SEO title tag, meta description, and keyword list from an article."""
     structured_llm = get_llm().with_structured_output(SeoMetadata, method="function_calling")
 
-    # Truncate content sent to the LLM to avoid huge prompts — first 3000 chars is enough
-    preview = article_content[:3000]
-    
+    hp_meta = cfg.hyperparams.metadata
+    hp_qa = cfg.hyperparams.qa.thresholds
 
-    prompt = f"""You are an SEO metadata specialist. Generate optimised metadata for the article below.
+    # Truncate content sent to the LLM to avoid huge prompts
+    preview = article_content[:hp_meta.article_preview_chars]
 
-Primary keyword: {primary_keyword}
-
-Article preview:
-{preview}
-
-Requirements:
-- title_tag: ≤60 characters, must include the primary keyword, compelling and click-worthy.
-- meta_description: ≤160 characters, must include the primary keyword and a clear call-to-action.
-- primary_keyword: the exact primary keyword string.
-- secondary_keywords: list of 4–8 secondary keywords found naturally in the article.
-
-Return a fully populated SeoMetadata."""
+    prompt = cfg.prompts.tools.metadata.format(
+        primary_keyword=primary_keyword,
+        preview=preview,
+        title_max=hp_qa.title_tag_max,
+        desc_max=hp_qa.meta_description_max,
+        secondary_min=hp_meta.secondary_keywords_min,
+        secondary_max=hp_meta.secondary_keywords_max,
+    )
 
     result: SeoMetadata = structured_llm.invoke(prompt)
     return result.model_dump_json()

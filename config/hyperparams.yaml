@@ -1,0 +1,135 @@
+# ============================================================
+# hyperparams.yaml — All numerical hyperparameters, thresholds,
+# limits, and word-count targets used throughout the pipeline.
+# ============================================================
+
+# ── Pipeline / graph-level ──────────────────────────────────
+pipeline:
+  max_retries: 3          # max retry attempts per node before routing to error_handler
+  max_revisions: 3        # max QA revision cycles before publishing best-effort
+  default_word_count: 1500
+  default_language: "en"
+
+# ── LangGraph agent recursion limits ───────────────────────
+agent:
+  orchestrator_max_iterations: 10
+  research_max_iterations: 10
+  outline_max_iterations: 10
+  qa_max_iterations: 3
+
+# ── QA validator ────────────────────────────────────────────
+qa:
+  pass_score: 80          # minimum score (out of 100) to pass QA
+
+  penalties:
+    keyword_in_h1: 15
+    keyword_in_intro: 15
+    keyword_density_out_of_range: 10
+    keyword_stuffing: 10
+    h2_keyword_coverage: 10
+    word_count_marginal: 10       # shortfall 75-85 % or excess 115-150 %
+    word_count_significant: 20    # shortfall 60-75 % or excess 150-200 %
+    word_count_severe: 30         # shortfall < 60 % or excess > 200 %
+    title_tag_length: 10
+    meta_description_length: 10
+    heading_hierarchy: 10
+    short_section: 5
+    link_placeholders: 5
+    content_truncated: 5
+
+  thresholds:
+    keyword_density_min: 0.5      # % — below this is under-optimised
+    keyword_density_max: 3.0      # % — above this is keyword stuffing
+    h2_keyword_coverage_min: 2    # minimum H2 headings that must contain a keyword
+    word_count_tolerance: 0.15    # ±15 % acceptable variance
+    word_count_ratio_marginal: 0.75   # below this → significant penalty
+    word_count_ratio_significant: 0.60 # below this → severe penalty
+    word_count_over_ratio_significant: 1.5  # above this → significant over
+    word_count_over_ratio_extreme:  2.0     # above this → severe over
+    intro_check_length: 500       # chars of body to check for primary keyword
+    min_section_words: 100        # minimum words per H2 section
+    title_tag_max: 60
+    title_tag_suggestion_threshold: 50
+    meta_description_max: 160
+    meta_description_suggestion_threshold: 140
+
+# ── API input constraints ────────────────────────────────────
+article:
+  word_count_min: 500
+  word_count_max: 5000
+  word_count_default: 1500
+  topic_min_length: 3
+
+# ── Article writer ───────────────────────────────────────────
+writing:
+  word_count_ceiling_multiplier: 1.15   # hard upper cap = target × this
+  serp_results_limit: 5                 # max SERP snippets passed to research context
+  competitor_structures_limit: 3        # max competitor heading blocks used
+  competitor_headings_limit: 4          # max headings taken per competitor
+  context_lookback_chars: 800           # previous article chars passed for continuity
+
+  intro_word_min: 120
+  intro_word_max: 150
+
+  section_min_multiplier: 0.85   # section must be ≥ target × this
+  section_max_multiplier: 1.20   # section must be ≤ target × this
+
+  h3_min_words: 80
+  faq_answer_min_words: 80
+  faq_remaining_budget_min: 100  # skip FAQ generation if budget below this
+  conclusion_word_min: 100
+  conclusion_word_max: 150
+  conclusion_remaining_budget_min: 50  # skip conclusion if budget below this
+
+# ── Outline builder ─────────────────────────────────────────
+outline:
+  min_h2_sections: 4          # warn if fewer H2 sections than this
+  min_h2_word_target: 150     # enforce minimum word target per H2
+  word_allocation_lower_bound: 0.90  # redistribute if total allocation < target × this
+
+  h1_word_min: 50
+  h1_word_max: 100
+  h2_count_min: 4
+  h2_count_max: 6
+  h3_per_h2_min: 2
+  h3_per_h2_max: 3
+  h2_word_pct_min: 70    # % of total word count for H2 sections
+  h2_word_pct_max: 80
+  h3_word_pct_min: 20
+  h3_word_pct_max: 30
+  section_count_min: 13   # 1 H1 + 4-6 H2 + 8-18 H3
+  section_count_max: 25
+  word_target_tolerance_pct: 10  # sum of targets within ±this% of requested count
+
+# ── Theme extractor ─────────────────────────────────────────
+theme_extractor:
+  serp_results_limit: 5
+  themes_count: 5
+  keywords_min: 5
+  keywords_max: 8
+  faqs_min: 5
+  faqs_max: 8
+  debug_sample_keywords: 3   # how many sample keywords to print in debug output
+  debug_sample_faqs: 2       # how many sample FAQs to print in debug output
+
+# ── SERP fetcher ─────────────────────────────────────────────
+serp:
+  organic_results_limit: 10  # max organic results to return from SerpAPI response
+
+# ── Debug display (console print truncation) ─────────────────
+debug:
+  preview_short: 50    # chars to show for short previews in debug prints
+  preview_long: 100    # chars to show for long previews in debug prints
+
+# ── Metadata generator ───────────────────────────────────────
+metadata:
+  article_preview_chars: 3000
+  secondary_keywords_min: 4
+  secondary_keywords_max: 8
+
+# ── Linking tool ─────────────────────────────────────────────
+linking:
+  internal_links_min: 3
+  internal_links_max: 5
+  external_links_min: 2
+  external_links_max: 4

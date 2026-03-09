@@ -12,10 +12,13 @@ from app.graph.state import ArticleGenerationState, SerpResult, ThemeAnalysis
 from app.graph.tools import get_llm
 from app.graph.tools.serp_fetch import serp_fetch_tool
 from app.graph.tools.theme_extractor import theme_extractor_tool
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = 10
+
+def _get_max_iterations() -> int:
+    return cfg.hyperparams.agent.research_max_iterations
 
 
 def _normalize_tool(t, name: str):
@@ -64,8 +67,9 @@ def faq_extractor_tool(serp_results_json: str) -> List[str]:
     """Lightweight heuristic FAQ extractor for SERP results."""
     try:
         raw = json.loads(serp_results_json)
+        limit = cfg.hyperparams.theme_extractor.serp_results_limit
         questions: List[str] = []
-        for item in raw[:5]:
+        for item in raw[:limit]:
             title = item.get("title") or "this topic"
             questions.append(f"What should readers know about {title}?")
         if not questions:
@@ -83,13 +87,7 @@ def _build_research_agent():
             _normalize_tool(theme_extractor_tool, "theme_extractor_tool"),
             _normalize_tool(faq_extractor_tool, "faq_extractor_tool"),
         ],
-        prompt=(
-            "You are ResearchAgent. Use the tools to gather SERP insights and extract SEO themes. "
-            "Call serp_fetch_tool with the topic to get results. Convert those results to JSON before "
-            "calling theme_extractor_tool (expects serp_results_json). Use faq_extractor_tool if you need "
-            "extra questions. Stop when you can return JSON with: serp_results, common_themes, "
-            "extracted_keywords, competitor_structures, faq_questions."
-        ),
+        prompt=cfg.prompts.agents.research,
     )
 
 
@@ -149,7 +147,8 @@ def research_node(state: ArticleGenerationState) -> dict:
         print(f"\n[STEP 1] Extracted topic from state:")
         print(f"  Topic: '{topic}'")
         print(f"  State keys: {list(state.keys())}")
-        print(f"  Full state summary: \n status={state.get('status')}, user_message={state.get('user_message', {}).get('content', '')[:50]}...")
+        _dbg = cfg.hyperparams.debug
+        print(f"  Full state summary: \n status={state.get('status')}, user_message={state.get('user_message', {}).get('content', '')[:_dbg.preview_short]}...")
         
         # Step 2: Build research agent
         print(f"\n[STEP 2] Building research agent...")
@@ -164,15 +163,15 @@ def research_node(state: ArticleGenerationState) -> dict:
             "Return only JSON with keys: serp_results, common_themes, extracted_keywords, competitor_structures, faq_questions."
         )
         print(f"\n[STEP 3] User message prepared:")
-        print(f"  Message: {user_message[:100]}...")
+        print(f"  Message: {user_message[:_dbg.preview_long]}...")
 
         try:
             # Step 4: Invoke agent
-            print(f"\n[STEP 4] Invoking research agent (max iterations: {MAX_AGENT_ITERATIONS})...")
+            print(f"\n[STEP 4] Invoking research agent (max iterations: {_get_max_iterations()})...")
             print(f"  → Sending message to agent...")
             agent_result = agent.invoke(
                 {"messages": [("user", user_message)]},
-                config={"recursion_limit": MAX_AGENT_ITERATIONS},
+                config={"recursion_limit": _get_max_iterations()},
             )
             print(f"  ✓ Agent invocation completed")
             print(f"  Agent result keys: {list(agent_result.keys()) if isinstance(agent_result, dict) else 'Not a dict'}")
@@ -196,8 +195,8 @@ def research_node(state: ArticleGenerationState) -> dict:
             if serp_results:
                 print(f"  Sample SERP result 1:")
                 first_result = serp_results[0]
-                print(f"    - Title: {getattr(first_result, 'title', 'N/A')[:50]}...")
-                print(f"    - URL: {getattr(first_result, 'url', 'N/A')[:50]}...")
+                print(f"    - Title: {getattr(first_result, 'title', 'N/A')[:_dbg.preview_short]}...")
+                print(f"    - URL: {getattr(first_result, 'url', 'N/A')[:_dbg.preview_short]}...")
                 print(f"    - Position: {getattr(first_result, 'position', 'N/A')}")
 
             # Step 7: Coerce theme analysis
@@ -208,11 +207,13 @@ def research_node(state: ArticleGenerationState) -> dict:
             print(f"    - Themes: {analysis.themes}")
             print(f"    - Keywords: {len(analysis.keywords)} keywords")
             if analysis.keywords:
-                print(f"      Sample keywords: {[k.word for k in analysis.keywords[:3]]}")
+                _kw_limit = cfg.hyperparams.theme_extractor.debug_sample_keywords
+                print(f"      Sample keywords: {[k.word for k in analysis.keywords[:_kw_limit]]}")
             print(f"    - Competitor structures: {analysis.competitor_structures}")
             print(f"    - FAQs: {len(analysis.faqs)} questions")
             if analysis.faqs:
-                print(f"      Sample FAQs: {analysis.faqs[:2]}")
+                _faq_limit = cfg.hyperparams.theme_extractor.debug_sample_faqs
+                print(f"      Sample FAQs: {analysis.faqs[:_faq_limit]}")
 
         except Exception as agent_exc:
             print(f"\n[STEP 4-7 ERROR] Research agent failed, attempting fallback...")

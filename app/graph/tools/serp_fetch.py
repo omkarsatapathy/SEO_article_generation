@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 
 from app.config import settings
 from app.graph.state import SerpResult
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +262,7 @@ def serp_fetch_tool(query: str) -> List[SerpResult]:
                 title=item["title"],
                 snippet=item.get("snippet", ""),
             )
-            for idx, item in enumerate(organic[:10])
+            for idx, item in enumerate(organic[:cfg.hyperparams.serp.organic_results_limit])
         ]
         print('SERP CALL SUCCESSFUL !! output with len:', len(result))
         return result

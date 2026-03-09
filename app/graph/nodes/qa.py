@@ -11,10 +11,13 @@ from langgraph.prebuilt import create_react_agent
 from app.graph.state import ArticleGenerationState, QAResult
 from app.graph.tools import get_llm
 from app.graph.tools.seo_validator import seo_validator_tool
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = 3
+
+def _get_max_iterations() -> int:
+    return cfg.hyperparams.agent.qa_max_iterations
 
 
 def _normalize_tool(t, name: str):
@@ -72,11 +75,7 @@ def _build_qa_agent():
             _normalize_tool(seo_validator_tool, "seo_validator_tool"),
             _normalize_tool(score_calculator_tool, "score_calculator_tool"),
         ],
-        prompt=(
-            "You are QAAgent. Use seo_validator_tool to evaluate the draft. Optionally adjust the score "
-            "with score_calculator_tool. Stop when you can return JSON with qa_result containing score, "
-            "passed, issues, suggestions."
-        ),
+        prompt=cfg.prompts.agents.qa,
     )
 
 
@@ -135,7 +134,7 @@ def qa_node(state: ArticleGenerationState) -> dict:
         try:
             agent_result = agent.invoke(
                 {"messages": [("user", user_message)]},
-                config={"recursion_limit": MAX_AGENT_ITERATIONS},
+                config={"recursion_limit": _get_max_iterations()},
             )
 
             payload = _extract_agent_payload(agent_result)
@@ -157,7 +156,10 @@ def qa_node(state: ArticleGenerationState) -> dict:
             )
             result = QAResult.model_validate_json(result_json)
 
-        logger.info("   📈 SEO Score: %d / 100  (pass threshold: %d)", result.score, 80)
+        logger.info(
+            "   📈 SEO Score: %d / 100  (pass threshold: %d)",
+            result.score, cfg.hyperparams.qa.pass_score,
+        )
         if result.issues:
             for issue in result.issues:
                 logger.info("      ⚠️  %s", issue)
@@ -176,7 +178,8 @@ def qa_node(state: ArticleGenerationState) -> dict:
             }
 
         new_rev = state.get("revision_count", 0) + 1
-        if new_rev >= 3:
+        max_rev = cfg.hyperparams.pipeline.max_revisions
+        if new_rev >= max_rev:
             logger.warning("   ⚠️  Max revisions reached (%d). Publishing best-effort.", new_rev)
             logger.info("───────────────────────────────────────────────────")
             return {

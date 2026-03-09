@@ -14,6 +14,7 @@ from app.graph.state import (
 from app.graph.tools.article_writer import article_writer_tool
 from app.graph.tools.linking_tool import linking_tool
 from app.graph.tools.metadata_generator import metadata_generator_tool
+from config.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,8 @@ def writer_node(state: ArticleGenerationState) -> dict:
         faq_json = json.dumps(state.get("faq_questions") or [])
         serp_results_json = json.dumps([s.model_dump() for s in (state.get("serp_results") or [])])
         competitor_structures_json = json.dumps([c.model_dump() for c in (state.get("competitor_structures") or [])])
-        language: str = state.get("language") or "en"
-        target_wc = state.get("word_count") or 1500
+        language: str = state.get("language") or cfg.hyperparams.pipeline.default_language
+        target_wc = state.get("word_count") or cfg.hyperparams.pipeline.default_word_count
 
         extracted_keywords = state.get("extracted_keywords") or []
         primary_kw = next(
@@ -158,7 +159,11 @@ def writer_node(state: ArticleGenerationState) -> dict:
         logger.error("   ❌ WRITER NODE FAILED: %s", exc, exc_info=True)
         retry_counts = dict(state.get("retry_counts") or {})
         retry_counts["writer"] = retry_counts.get("writer", 0) + 1
-        logger.info("   🔄 Retry count: %d / 3", retry_counts["writer"])
+        logger.info(
+            "   🔄 Retry count: %d / %d",
+            retry_counts["writer"],
+            cfg.hyperparams.pipeline.max_retries,
+        )
         return {
             "errors": [f"writer_node error: {exc}"],
             "retry_counts": retry_counts,
