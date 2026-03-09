@@ -71,7 +71,7 @@ writing:
   intro_word_min: 120
   intro_word_max: 150
 
-  section_min_multiplier: 0.85   # section must be ≥ target × this
+  section_min_multiplier: 0.65   # section must be ≥ target × this (lower = fewer expand retries)
   section_max_multiplier: 1.20   # section must be ≤ target × this
 
   h3_min_words: 80

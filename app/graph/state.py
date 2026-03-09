@@ -47,14 +47,15 @@ class SeoMetadata(BaseModel):
     @classmethod
     def title_tag_max_60(cls, v: str) -> str:
         if len(v) > 60:
-            raise ValueError(f"title_tag must be ≤60 characters (got {len(v)})")
+            # Auto-truncate at last word boundary instead of crashing
+            v = v[:59].rsplit(" ", 1)[0] + "…"
         return v
 
     @field_validator("meta_description")
     @classmethod
     def meta_description_max_160(cls, v: str) -> str:
         if len(v) > 160:
-            raise ValueError(f"meta_description must be ≤160 characters (got {len(v)})")
+            v = v[:159].rsplit(" ", 1)[0] + "…"
         return v
 
 

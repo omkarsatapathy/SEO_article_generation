@@ -152,23 +152,44 @@ tools:
     Generate the outline structure now. Ensure every field is properly formatted and all requirements are met.
 
   intro: |
-    Write an engaging introduction paragraph for an SEO article titled "# {h1_heading}" in {language}.
+    You are a seasoned writer and subject-matter enthusiast — someone who genuinely finds this topic interesting and wants to share what they know with a friend over coffee.
+
+    Write an introduction for an article titled "# {h1_heading}" in {language}.
 
     Primary keyword: {primary_kw}
     Article themes: {themes_json}
     Target: {intro_word_min}–{intro_word_max} words.
     {research_block}{qa_block}
-    RULES:
-    - Hook the reader in the first sentence.
-    - State the primary keyword "{primary_kw}" within the first two sentences.
-    - Clearly state what the article covers.
+    VOICE & TONE RULES (critical — the text must read as human-written):
+    - Write like a real person, not a textbook. Imagine you're explaining this to a smart friend.
+    - Vary your sentence lengths — mix short punchy sentences with longer flowing ones.
+    - Open with something specific: a surprising fact, a bold claim, a relatable scenario, or a question the reader might already be thinking. Avoid generic openers like "In today's world" or "Have you ever wondered".
+    - Mention "{primary_kw}" within the first two sentences, but weave it in so it doesn't feel forced.
+    - Let your personality come through. It's okay to have a slight opinion or point of view.
+    - Use contractions ("it's", "you'll", "don't") — real people use them.
+    - NO buzzword-stuffed filler. Every sentence should say something concrete.
+
+    BANNED PHRASES (these scream "AI wrote this"):
+    - "In today's [fast-paced/digital/ever-changing] world"
+    - "It's important to note/understand"
+    - "Whether you're a beginner or an expert"
+    - "Look no further"
+    - "In this comprehensive guide"
+    - "Let's dive in" / "Let's explore" / "Let's delve"
+    - "Navigating the landscape"
+    - "Unlock the secrets"
+    - "Game-changer" / "cutting-edge" / "revolutionize"
+
+    FORMATTING:
     - Do NOT include the H1 heading — just the paragraph text.
-    - Write flowing, natural prose. No bullet points.
+    - Flowing prose only. No bullet points.
     - Complete every sentence fully.
 
     Write the introduction now:
 
   section: |
+    You're a knowledgeable writer who actually cares about this topic. Write this section like you're sharing real insight — not reciting an encyclopedia.
+
     Write the following section of an SEO article in {language}.
     {research_block}{qa_block}
     ## {h2_heading}
@@ -183,25 +204,55 @@ tools:
     All keywords: {keywords_json}
     Themes: {themes_json}
 
-    RULES:
+    VOICE & TONE (you MUST follow these — the article must sound human-written):
+    - Write like a person talking to another person. Be conversational but authoritative.
+    - Vary sentence rhythm: short sentence. Then a longer one that unpacks the idea further. Then maybe a medium one. Don't write every sentence at the same length.
+    - Ground claims in specifics — numbers, examples, comparisons. Vague statements feel robotic.
+    - Use transitions that a real person would use ("Here's the thing", "That said", "What most people miss", "The tricky part is") instead of AI-sounding transitions ("Furthermore", "Moreover", "Additionally", "It is worth noting").
+    - It's fine to express a measured opinion or perspective. Humans have viewpoints.
+    - Use contractions naturally. Write "don't" not "do not", "it's" not "it is".
+    - Occasionally use a rhetorical question or a brief aside — this is how real writing breathes.
+    - DO NOT start consecutive paragraphs with the same sentence structure.
+
+    BANNED PHRASES (these reveal AI authorship — never use them):
+    - "It's important to note/understand/remember"
+    - "Furthermore" / "Moreover" / "Additionally" (at sentence start)
+    - "In the realm of" / "When it comes to"
+    - "It's worth mentioning" / "It goes without saying"
+    - "This is where X comes into play"
+    - "In conclusion" (within body sections)
+    - "Plays a crucial role" / "is a key factor"
+    - "Landscape" (as a metaphor) / "Navigate" (as a metaphor)
+    - "Delve" / "Delving" / "Dive deep"
+
+    FORMATTING RULES:
     - Start output with "## {h2_heading}" on its own line.
-    - Write EXACTLY {min_words}–{max_words} words. STOP writing once you approach {max_words} words.
-    - Write 2 paragraphs, each 60–100 words. Be concise and substantive.
+    - Write EXACTLY {min_words}–{max_words} words. STOP once you approach {max_words}.
     - Use the primary keyword ONCE naturally. Use semantic variants elsewhere.
     - Include sub-section headings as ### if specified above; each H3 gets ≥ {h3_min_words} words.
     - Do NOT use bullet lists. Write flowing prose.
     - Do NOT include any preamble or meta-commentary. Output ONLY the section content in Markdown.
-    - Do NOT leave sentences unfinished. Complete every paragraph fully.
+    - Complete every sentence fully. No fragments.
     - STOP at {max_words} words. Do NOT write more.
 
-    Previous content (for continuity):
+    Previous content (for continuity — match the voice and flow):
     {prev_content}
 
     Write the complete section now (MAXIMUM {max_words} words):
 
   section_expand: |
     The section below is only {curr_word_count} words but needs at least {target} words.
-    REWRITE and EXPAND it to {target}+ words. Add more detail, data points, examples, and explanations.
+    REWRITE and EXPAND it to {target}+ words while keeping it sounding natural and human.
+
+    When expanding, DO NOT just pad with filler sentences. Instead:
+    - Add a concrete example, a comparison, or a real-world scenario that illustrates the point.
+    - Unpack an idea that was glossed over — explain the "why" or "how" behind it.
+    - Add a sentence that acknowledges a nuance, exception, or counterpoint — this is how real writers think.
+    - Vary sentence lengths in the new content. Mix short and long.
+    - Keep the same conversational tone as the original. Don't suddenly become more formal.
+
+    DO NOT use these filler patterns: "It is important to note", "Furthermore", "Moreover", "Additionally", "In today's world".
+
     Keep the same heading structure and topic. Output ONLY the expanded Markdown section.
 
     {content}
@@ -210,6 +261,7 @@ tools:
 
   faq: |
     Write an FAQ section for an SEO article in {language}.
+    Answer these like a helpful expert having a conversation — not like a chatbot giving canned responses.
 
     Questions:
     {q_list}
@@ -221,8 +273,13 @@ tools:
     - There are {num_questions} questions. Answer ALL of them.
     - Each question becomes an ### heading followed by a CONCISE answer ({faq_min_words}–{faq_max_words} words per answer).
     - *** STRICT TOTAL LIMIT: The ENTIRE FAQ section (heading + all Q&A) must be ≤ {faq_total_max} words. ***
-    - Be direct and concise. 2-3 sentences per answer is ideal.
-    - Use the primary keyword naturally where relevant.
+
+    VOICE (critical):
+    - Answer like a knowledgeable person would — directly, with a touch of personality.
+    - Get straight to the point. Don't start every answer with "Yes," or repeat the question back.
+    - It's okay to be slightly casual: use contractions, and write the way someone would actually explain something out loud.
+    - Vary how you start each answer — some with a direct statement, some with a brief qualifier, some with a surprising fact.
+    - DO NOT use: "It's important to", "It's worth noting", "In essence", "Absolutely!"
     - Write flowing prose. No bullet lists.
     - Output ONLY the FAQ section in Markdown.
 
@@ -230,17 +287,25 @@ tools:
 
   conclusion: |
     Write a conclusion for the SEO article "{h1_heading}" in {language}.
+    Wrap things up the way a thoughtful writer would — not with a robotic summary.
 
     Primary keyword: {primary_kw}
     Target: {conclusion_word_min}–{conclusion_word_max} words.
 
     RULES:
     - Start with "## Conclusion" on its own line.
-    - Summarise key takeaways from the article.
-    - Include a clear call-to-action.
+    - Don't just repeat what was already said. Instead, step back and offer a broader takeaway or a forward-looking thought.
+    - Include a call-to-action, but make it feel natural — like a suggestion from a friend, not a marketing command.
     - Use the primary keyword once naturally.
     - Write flowing prose. No bullet points.
     - Complete every sentence fully.
+
+    BANNED PHRASES:
+    - "In conclusion" (you already have the heading — don't say it again in the text)
+    - "To sum up" / "To summarize" / "In summary"
+    - "As we have seen" / "As discussed above"
+    - "It is clear that"
+    - "All in all"
 
     Write the conclusion now:
 
